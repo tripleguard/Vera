@@ -188,7 +188,6 @@ def _force_foreground(hwnd: int) -> bool:
         # Присоединяем потоки для обхода ограничений
         if fg_thread != target_thread:
             try:
-                import win32api
                 win32process.AttachThreadInput(fg_thread, target_thread, True)
                 win32gui.SetForegroundWindow(hwnd)
                 win32gui.BringWindowToTop(hwnd)
@@ -202,7 +201,7 @@ def _force_foreground(hwnd: int) -> bool:
             win32gui.BringWindowToTop(hwnd)
         
         return True
-    except Exception as e:
+    except Exception:
         return False
 
 
@@ -227,7 +226,7 @@ def _restore_window(app_name: str) -> str:
         _force_foreground(hwnd)
         
         return f"Окно '{app_name}' развёрнуто."
-    except Exception as e:
+    except Exception:
         return f"Не удалось развернуть окно '{app_name}'."
 
 

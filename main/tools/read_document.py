@@ -24,6 +24,18 @@ except ImportError:
     except ImportError:
         HAS_PDF = False
 
+try:
+    import openpyxl
+    HAS_XLSX = True
+except ImportError:
+    HAS_XLSX = False
+
+try:
+    from pptx import Presentation as PptxPresentation
+    HAS_PPTX = True
+except ImportError:
+    HAS_PPTX = False
+
 # Максимальная длина текста для возврата
 MAX_TEXT_LENGTH = 8000
 
@@ -97,6 +109,46 @@ def _read_pdf(file_path: Path) -> str:
     return "\n".join(text_parts)
 
 
+def _read_xlsx(file_path: Path) -> str:
+    """Читает .xlsx файл (Excel)."""
+    if not HAS_XLSX:
+        return "[Ошибка: для чтения .xlsx установите openpyxl]"
+    
+    wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
+    parts = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c) if c is not None else "" for c in row]
+            if any(cells):
+                rows.append("\t".join(cells))
+        if rows:
+            parts.append(f"--- Лист: {sheet_name} ---\n" + "\n".join(rows))
+    wb.close()
+    return "\n\n".join(parts) if parts else "(Пустая таблица)"
+
+
+def _read_pptx(file_path: Path) -> str:
+    """Читает .pptx файл (PowerPoint)."""
+    if not HAS_PPTX:
+        return "[Ошибка: для чтения .pptx установите python-pptx]"
+    
+    prs = PptxPresentation(str(file_path))
+    parts = []
+    for i, slide in enumerate(prs.slides, 1):
+        texts = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        texts.append(text)
+        if texts:
+            parts.append(f"--- Слайд {i} ---\n" + "\n".join(texts))
+    return "\n\n".join(parts) if parts else "(Пустая презентация)"
+
+
 def read_document(filename: str) -> str:
     print(f"[READ_DOC] Поиск файла: {filename}")
     
@@ -123,6 +175,10 @@ def read_document(filename: str) -> str:
             content = _read_doc(file_path)
         elif suffix == '.pdf':
             content = _read_pdf(file_path)
+        elif suffix in ('.xlsx', '.xls'):
+            content = _read_xlsx(file_path)
+        elif suffix == '.pptx':
+            content = _read_pptx(file_path)
         else:
             # Пробуем как текст
             try:
@@ -151,3 +207,42 @@ def execute_read_document(arguments: dict) -> str:
         return "Укажите имя файла для чтения."
     
     return read_document(filename)
+
+
+def read_document_from_path(file_path: Path) -> str:
+    """Читает документ напрямую по пути (для API загрузки файлов)."""
+    if not file_path.exists():
+        return f"Файл '{file_path.name}' не найден."
+    
+    suffix = file_path.suffix.lower()
+    
+    try:
+        if suffix in ('.txt', '.md', '.log', '.json', '.xml', '.html', '.css', '.js', '.py', '.csv'):
+            content = _read_txt(file_path)
+        elif suffix == '.docx':
+            content = _read_docx(file_path)
+        elif suffix == '.doc':
+            content = _read_doc(file_path)
+        elif suffix == '.pdf':
+            content = _read_pdf(file_path)
+        elif suffix in ('.xlsx', '.xls'):
+            content = _read_xlsx(file_path)
+        elif suffix == '.pptx':
+            content = _read_pptx(file_path)
+        else:
+            try:
+                content = _read_txt(file_path)
+            except Exception:
+                return f"Формат файла '{suffix}' не поддерживается."
+        
+        if len(content) > MAX_TEXT_LENGTH:
+            content = content[:MAX_TEXT_LENGTH] + f"\n\n[... текст обрезан, всего {len(content)} символов]"
+        
+        if not content.strip():
+            return f"Файл '{file_path.name}' пустой."
+        
+        return content
+        
+    except Exception as e:
+        print(f"[READ_DOC] Ошибка чтения: {e}")
+        return f"Ошибка чтения файла '{file_path.name}': {e}"

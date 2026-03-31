@@ -12,7 +12,6 @@ from .system_control import (
     execute_brightness_command,
     execute_screenshot_command,
     execute_ip_command,
-    execute_internet_speed_command,
     execute_start_menu_command,
     execute_explorer_command,
 )
@@ -45,26 +44,23 @@ from .time_commands import (
     set_shutdown_event as set_reminder_shutdown_event,
 )
 
-from .scheduled_apps import (
-    execute_scheduled_app_command,
-    start_app_scheduler,
-    set_speak_callback as set_scheduled_speak_callback,
-    set_open_app_callback,
-    set_close_app_callback,
-    set_shutdown_event as set_app_scheduler_shutdown_event,
-)
 
 from .power_manager import (
     execute_power_command,
+)
+
+from .heartbeat_commands import (
+    execute_heartbeat_command,
+    start_heartbeat_scheduler,
+    set_heartbeat_speak_callback,
+    set_heartbeat_route_callback,
+    set_heartbeat_shutdown_event,
 )
 
 from .recyclebin_commands import (
     execute_recyclebin_command,
 )
 
-from .user_commands import (
-    execute_user_name_command,
-)
 
 # set_last_search_urls_ref экспортируется из web_commands
 # set_speak_callback экспортируется из time_commands
@@ -89,9 +85,10 @@ HANDLERS = (
     # Питание (ПЕРЕД приложениями, чтобы "выключи компьютер" не путалось с закрытием приложений)
     execute_power_command,
     
-    # Запланированный запуск (ПЕРЕД обычным запуском, чтобы "запусти в 2:05" не запускало сразу)
-    execute_scheduled_app_command,
+    # Heartbeat задачи
+    execute_heartbeat_command,
     
+
     # Приложения
     execute_predefined_command,
     execute_browser_command,
@@ -106,7 +103,6 @@ HANDLERS = (
     execute_brightness_command,
     execute_screenshot_command,
     execute_ip_command,
-    execute_internet_speed_command,
     
     # Время
     execute_time_command,
@@ -124,11 +120,10 @@ __all__ = [
     'set_speak_callback',
     'stop_timer_ring',
     'is_timer_ringing',
-    'execute_user_name_command',
-    'start_app_scheduler',
-    'set_scheduled_speak_callback',
-    'set_open_app_callback',
+    'find_file',
     'set_reminder_shutdown_event',
-    'set_app_scheduler_shutdown_event',
+    'start_heartbeat_scheduler',
+    'set_heartbeat_speak_callback',
+    'set_heartbeat_route_callback',
+    'set_heartbeat_shutdown_event',
 ]
-

@@ -99,7 +99,7 @@ def execute_predefined_command(text: str) -> Optional[str]:
 
 def _best_app_match(query: str) -> Optional[dict]:
     """ Нечёткий поиск приложения с учётом транслитерации."""
-    q = re.sub(r"[^a-zа-я0-9]+", "", query.lower())
+    q = re.sub("[^a-z\\u0430-\\u044f\\u04510-9]+", "", query.lower())
     q_en = ru_to_en(q)
     best_item, best_score = None, 0.0
     
@@ -110,7 +110,7 @@ def _best_app_match(query: str) -> Optional[dict]:
             if not cand:
                 continue
             
-            c_norm = re.sub(r"[^a-zа-я0-9]+", "", cand)
+            c_norm = re.sub("[^a-z\\u0430-\\u044f\\u04510-9]+", "", cand)
             # Используем fuzzy_match для обоих вариантов (оригинал + транслит)
             score = max(
                 fuzzy_match(q, c_norm, boost_substring=False),
@@ -230,17 +230,6 @@ def _close_app(app: dict) -> str:
     return "Закрываю приложение." if any_killed else "Приложение не найдено среди процессов."
 
 
-def close_app_by_name(name: str) -> str:
-    """Закрывает приложение по имени (для scheduled_apps)."""
-    app = _best_app_match(name)
-    if not app:
-        # Пробуем закрыть напрямую по имени
-        if kill_process(name):
-            return f"Закрываю {name}."
-        return f"Приложение '{name}' не найдено."
-    return _close_app(app)
-
-
 def execute_browser_command(text: str) -> Optional[str]:
     """Открывает браузер по умолчанию."""
     lowered = text.lower().strip()
@@ -300,17 +289,10 @@ def execute_rebuild_index_command(text: str) -> Optional[str]:
 
 def execute_coin_flip_command(text: str) -> Optional[str]:
     """Подбрасывает монетку."""
-    if not any(t in text.lower() for t in ['подбрось монет', 'орёл или решк', 'монетк']):
+    if not any(t in text.lower() for t in ['подбрось монет', 'орёл или решк', 'монетк', 'орел или решк']):
         return None
     
     import random
     result = random.choice(['орёл', 'решка'])
     return f"{'Выпал' if result == 'орёл' else 'Выпала'} {result}"
 
-
-def open_app_by_name(app_name: str) -> Optional[str]:
-    """Запускает приложение по имени (для scheduled_apps)."""
-    app = _best_app_match(app_name)
-    if app:
-        return _open_app(app)
-    return None

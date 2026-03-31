@@ -1,104 +1,213 @@
-import json
+﻿import json
 import os
 import re
 import queue
 import threading
 import sys
 import time
-from pathlib import Path
-from collections import deque
+from array import array
+from typing import Optional
 import difflib
 import sounddevice as sd
-import vosk
+import sherpa_onnx
 import pyttsx3
-from llama_cpp import Llama
-from typing import Optional
-import ctypes
+from main.llm_server import LlamaServer, LlamaClient
 import msvcrt
 from functools import partial
 from web.web_search import web_search_answer, execute_wikipedia_command
 from web.weather import execute_weather_command
 from web.currency import execute_currency_command
 from .lang_ru import convert_years_in_text
-from .multitask import execute_multitask
-from .commands import HANDLERS, set_speak_callback, set_last_search_urls_ref, execute_user_name_command, stop_timer_ring, is_timer_ringing
-from .commands import start_app_scheduler, set_scheduled_speak_callback, set_open_app_callback, set_close_app_callback
-from .commands import set_reminder_shutdown_event, set_app_scheduler_shutdown_event
+from .commands import HANDLERS, set_speak_callback, set_last_search_urls_ref, stop_timer_ring, is_timer_ringing
+from .commands import set_reminder_shutdown_event
+from .commands import start_heartbeat_scheduler, set_heartbeat_speak_callback, set_heartbeat_route_callback, set_heartbeat_shutdown_event
 from .commands.time_commands import start_scheduler
-from .commands.app_control import open_app_by_name, close_app_by_name
-from user.tasks import TaskManager, execute_task_command
-from user.user_profile import UserProfile, execute_profile_command
-from user.history_logger import HistoryLogger, execute_history_command
+from user.memory import MemoryManager
+from user.memory_extractor import extract_facts, should_extract_facts, extract_from_remember_command
+
 from .tools import TOOLS
+from .tool_definitions import TOOL_DEFINITIONS
+from .tools.presentation_generator import is_presentation_request, execute_presentation_creation
+from .tools.document_generator import create_pptx
+from .prompt_builder import build_system_prompt, reload_prompt, get_prompt_status
 
-def _enable_windows_ansi():
-    try:
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-        mode = ctypes.c_uint32()
-        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-            ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-            new_mode = mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING
-            kernel32.SetConsoleMode(handle, new_mode)
-    except Exception:
-        pass
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-_ANSI_COLORS = {
-    "reset": "\033[0m",
-    "black": "\033[30m",
-    "red": "\033[31m",
-    "green": "\033[32m",
-    "yellow": "\033[33m",
-    "blue": "\033[34m",
-    "magenta": "\033[35m",
-    "cyan": "\033[36m",
-    "white": "\033[37m",
-}
+_ws_out_queue: "queue.Queue[dict]" = queue.Queue()
 
-_current_color = "reset"
+def _send_ws(msg: dict):
+    """Отправка сообщения в UI через внутреннюю очередь, которую читает сервер"""
+    _ws_out_queue.put(msg)
+
 _mic_muted = False
 _mic_muted_lock = threading.Lock()  # Lock для thread-safe доступа к _mic_muted
 _shutdown_event = threading.Event()  # Event для graceful shutdown
-_shutdown_requested = False  # Флаг для корректного завершения (legacy)
 
-def set_console_color(name: str) -> bool:
-    global _current_color
-    key = name.strip().lower()
-    code = _ANSI_COLORS.get(key)
-    if not code:
-        return False
-    try:
-        sys.stdout.write(code)
-        sys.stdout.flush()
-        _current_color = key
+# ── Telegram-режим ──
+_telegram_mode = None  # Экземпляр TelegramMode (или None)
+_TELEGRAM_TRIGGERS = (
+    "уйди в телегу", "уйди в телеграм", "перейди в телеграм",
+    "запусти телегу", "работай в телеграме", "иди в телегу",
+    "переходи в телегу", "переходи в телеграм",
+)
+_TELEGRAM_EXIT = None  # Lazily loaded from telegram_mode
+_WHO_ARE_YOU_RE = re.compile(
+    r"(?:^|\W)("
+    r"кто\s+ты"
+    r"|ты\s+кто"
+    r"|кто\s+такая"
+    r"|кто\s+такой"
+    r"|как\s+тебя\s+зовут"
+    r"|представься"
+    r"|что\s+ты\s+за\s+агент"
+    r")(?:\W|$)",
+    re.IGNORECASE,
+)
+
+_WAKE_WORD_RE = re.compile("^\\s*\\u0432\\u0435\\u0440\\u0430[\\s,!.?:;\\-]*", re.IGNORECASE)
+_GREETING_RE = re.compile(
+    "^(?:\\u043f\\u0440\\u0438\\u0432\\u0435\\u0442|\\u0437\\u0434\\u0440\\u0430\\u0432\\u0441\\u0442\\u0432\\u0443\\u0439(?:\\u0442\\u0435)?|\\u0434\\u043e\\u0431\\u0440\\u043e\\u0435\\s+\\u0443\\u0442\\u0440\\u043e|\\u0434\\u043e\\u0431\\u0440\\u044b\\u0439\\s+\\u0434\\u0435\\u043d\\u044c|\\u0434\\u043e\\u0431\\u0440\\u044b\\u0439\\s+\\u0432\\u0435\\u0447\\u0435\\u0440|\\u0445\\u0430\\u0439|\\u043a\\u0443)\\W*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_wake_word(text: str) -> str:
+    return _WAKE_WORD_RE.sub("", text or "", count=1).strip()
+
+
+def _is_simple_greeting(text: str) -> bool:
+    cleaned = _strip_wake_word(text).strip()
+    if not cleaned:
         return True
+    return bool(_GREETING_RE.fullmatch(cleaned))
+
+def _get_telegram_exit_commands():
+    """Lazily loads Telegram exit commands from telegram_mode module."""
+    global _TELEGRAM_EXIT
+    if _TELEGRAM_EXIT is None:
+        try:
+            from main.tools.telegram_mode import TELEGRAM_EXIT_COMMANDS
+            _TELEGRAM_EXIT = TELEGRAM_EXIT_COMMANDS
+        except ImportError:
+            _TELEGRAM_EXIT = {"вернись", "вера вернись", "выйди из телеги", "выйди из телеграма"}
+    return _TELEGRAM_EXIT
+
+def _start_telegram_mode() -> str:
+    """Запускает Telegram-режим и отключает микрофон."""
+    global _telegram_mode, _mic_muted
+    if _telegram_mode and _telegram_mode.running:
+        return "Я уже в Telegram-режиме. Пиши в збранное."
+    # Отключаем старый клиент telegram.py ДО запуска нового потока,
+    # чтобы освободить блокировку SQLite-сессии
+    try:
+        from main.tools.telegram import _client_disconnect
+        _client_disconnect()
     except Exception:
-        return False
+        pass
+    from main.tools.telegram_mode import TelegramMode
+    from main.file_indexer import smart_search
+    _telegram_mode = TelegramMode(
+        route_func=_telegram_route_command,
+        file_search_func=smart_search,
+        on_exit=_exit_telegram_mode_callback
+    )
+    ok = _telegram_mode.start_in_background()
+    if ok:
+        with _mic_muted_lock:
+            _mic_muted = True
+        print("[TG_MODE] Telegram-режим запущен, микрофон отключён.")
+        return "Ушла в Telegram! Пиши в збранное (Saved Messages) 💬\nДля возврата напиши 'вернись' в Telegram или в консоль."
+    else:
+        _telegram_mode = None
+        return "Не удалось запустить Telegram-режим. Проверь авторизацию."
+
+def _stop_telegram_mode() -> str:
+    """Останавливает Telegram-режим и включает микрофон."""
+    global _telegram_mode, _mic_muted
+    if not _telegram_mode or not _telegram_mode.running:
+        return "Я не в Telegram-режиме."
+    _telegram_mode.stop()
+    _telegram_mode = None
+    with _mic_muted_lock:
+        _mic_muted = False
+    print("[TG_MODE] Вернулась из Telegram, микрофон включён.")
+    return "Вернулась из Telegram! Голосовой режим восстановлен."
+
+def _exit_telegram_mode_callback():
+    """Колбэк от TelegramMode при выходе изнутри (по команде 'вернись' в Telegram)."""
+    global _telegram_mode, _mic_muted
+    _telegram_mode = None
+    with _mic_muted_lock:
+        _mic_muted = False
+    print("[TG_MODE] Вернулась из Telegram (по команде), микрофон включён.")
+
+def _telegram_route_command(text: str) -> str:
+    """Маршрутизация команд в Telegram-режиме (без управления ПК)."""
+    # В Telegram-режиме выполняем ТОЛЬКО:
+    #   - создание презентаций (с отправкой файла)
+    #   - обработчики задач, памяти, истории
+    #   - валюты, погоду, википедию
+    #   - веб-поиск и LLM
+    # НЕ выполняем HANDLERS (там управление ПК: окна, приложения, щелчки и т.д.)
+    lowered = (text or "").lower().strip()
+
+    if _WHO_ARE_YOU_RE.search(lowered):
+        return "Я Вера, твой агент-помощник. Могу отвечать на вопросы и помогать с задачами."
+
+    # Презентации — создаём и передаём маркер файла для отправки в Telegram
+    if is_presentation_request(text):
+        msg, file_path = execute_presentation_creation(
+            text=text,
+            llm=llm,
+            web_search_func=_web_search_for_presentation,
+            create_pptx_func=create_pptx
+        )
+        if file_path:
+            return f"__FILE__{file_path}__ENDFILE__{msg}"
+        return msg
+
+    for h in HANDLERS_WITH_MANAGERS:
+        try:
+            res = h(text)
+        except Exception as e:
+            print(f"[TG_ROUTE] handler: {e}")
+            res = None
+        if res is not None:
+            return res
+    for h in (execute_currency_command, execute_weather_command, execute_wikipedia_command):
+        try:
+            res = h(text)
+        except Exception as e:
+            print(f"[TG_ROUTE] {h.__name__}: {e}")
+            res = None
+        if res is not None:
+            return res
+    # В Telegram-режиме обычный диалог ведём без tool-calling, чтобы LLM не запускала
+    # create_document/read_document на простых сообщениях.
+    return ask_llm(text, source="telegram", allow_tools=False)
 
 def _print_banner_and_tips(activation_word: str):
     banner = (
         "\n"
-        "\033[96m __     _______ ____      _    \033[94m\n"
-        "\033[96m \\ \\   / / ____|  _ \\    / \\   \033[94m\n"
-        "\033[96m  \\ \\ / /|  _| | |_) |  / _ \\  \033[94m\n"
-        "\033[96m   \\ V / | |___|  _ <  / ___ \\ \033[94m\n"
-        "\033[96m    \\_/  |_____|_| \\_\\/_/   \\_\\\033[94m\n"
-        "\033[0m\n"
-        "\033[96mVoice-Enabled Responsive Agent\033[0m\n"
+        " __     _______ ____      _    \n"
+        " \\ \\   / / ____|  _ \\    / \\   \n"
+        "  \\ \\ / /|  _| | |_) |  / _ \\  \n"
+        "   \\ V / | |___|  _ <  / ___ \\ \n"
+        "    \\_/  |_____|_| \\_\\/_/   \\_\\\n"
+        "\n"
+        "Голосовой персональный ассистент\n"
     )
     print(banner)
     print(f"1. Для запуска агента скажите активационное слово \"{activation_word}\".")
-    print("2. /help для информации по командам")
-    print("3. /color <цвет> для изменения цвета (например: /color green)")
 
 def _safe_shutdown():
     """Безопасное завершение работы агента с сохранением данных."""
-    global _shutdown_requested
     print("Завершение работы агента...")
     
-    # Устанавливаем флаг и event завершения для остановки всех циклов
-    _shutdown_requested = True
-    _shutdown_event.set()  # Сигнал всем scheduler'ам
+    # Устанавливаем event завершения для остановки всех циклов
+    _shutdown_event.set()
     
     # Очищаем очередь TTS и останавливаем поток
     try:
@@ -111,106 +220,87 @@ def _safe_shutdown():
     # Даем время на завершение потока TTS
     time.sleep(0.5)
     
+    # Останавливаем LLM-сервер
+    try:
+        _llm_server.stop()
+    except Exception as e:
+        print(f"[SAVE] Ошибка остановки LLM-сервера: {e}")
+    
     # Сохраняем все данные пользователя (безопасный доступ через globals)
     print("Сохранение данных...")
     g = globals()
     
-    if 'task_manager' in g:
+    if 'memory_manager' in g:
         try:
-            g['task_manager']._save()
-            print("[SAVE] Задачи сохранены")
+            # Сохраняем краткое содержание сессии перед выходом
+            summary = memory_manager.get_context_for_prompt()
+            if summary:
+                memory_manager.update_session_summary(summary)
+            g['memory_manager'].save()
+            print("[SAVE] Память сохранена")
         except Exception as e:
-            print(f"[SAVE] Ошибка сохранения задач: {e}")
+            print(f"[SAVE] Ошибка сохранения памяти: {e}")
     
-    if 'user_profile' in g:
-        try:
-            g['user_profile']._save()
-            print("[SAVE] Профиль сохранен")
-        except Exception as e:
-            print(f"[SAVE] Ошибка сохранения профиля: {e}")
-    
-    if 'history_logger' in g:
-        try:
-            g['history_logger']._save()
-            print("[SAVE] История сохранена")
-        except Exception as e:
-            print(f"[SAVE] Ошибка сохранения истории: {e}")
+
     
     print("Данные сохранены. До свидания!")
     # Не вызываем sys.exit() сразу - даем главному циклу завершиться
     # sys.exit(0) будет вызван из главного цикла
+
+def execute_slash_command(text: str) -> str:
+    """Единый обработчик слеш-команд для консоли и GUI."""
+    global _mic_muted
+    if text == "/mute":
+        with _mic_muted_lock:
+            _mic_muted = True
+        return ""
+    if text == "/unmute":
+        with _mic_muted_lock:
+            _mic_muted = False
+        return ""
+    if text == "/exit":
+        _safe_shutdown()
+        return "Завершаю работу..."
+    if text == "/tg":
+        return _start_telegram_mode()
+    return "Неизвестная команда."
 
 def _stdin_listener():
     global _mic_muted
     retry_count = 0
     max_retries = 3
     
-    while retry_count < max_retries:
+    while retry_count < max_retries and not _shutdown_event.is_set():
         try:
             line = sys.stdin.readline()
-            if not line:
+            if line is None or not line:
+                if _shutdown_event.is_set():
+                    return
                 time.sleep(0.1)
                 continue
             line = line.strip()
             if line.startswith("/"):
-                if line in ("/help", "/h", "/?"):
-                    print("Доступные команды:")
-                    print("  /help — показать помощь")
-                    print("  /color <имя> — установить цвет консоли. Доступно: " + 
-                          ", ".join(sorted(k for k in _ANSI_COLORS.keys() if k != "reset")) + 
-                          ". Пример: /color green")
-                    print("  /color reset — сбросить цвет по умолчанию")
-                    print("  /mute — выключить микрофон (распознавание речи)")
-                    print("  /unmute — включить микрофон (распознавание речи)")
-                    print("  /exit — завершить работу агента")
-                    print("  Введите текст без слеша — выполнить команду в текстовом режиме (ответ только в консоли)")
-                    continue
-                if line.startswith("/color"):
-                    parts = line.split(maxsplit=1)
-                    if len(parts) == 1:
-                        print("Укажите цвет: /color <имя>. Пример: /color blue")
-                        continue
-                    name = parts[1].strip()
-                    if set_console_color(name):
-                        print(f"Цвет консоли изменён на: {name}")
-                    else:
-                        print("Неизвестный цвет. Доступные: " + 
-                              ", ".join(sorted(_ANSI_COLORS.keys())))
-                    continue
-                if line == "/mute":
-                    with _mic_muted_lock:
-                        _mic_muted = True
-                    print("[MIC] Микрофон выключен.")
-                    continue
-                if line == "/unmute":
-                    with _mic_muted_lock:
-                        _mic_muted = False
-                    print("[MIC] Микрофон включен.")
-                    continue
-                if line == "/exit":
-                    _safe_shutdown()
-                # неизвестная команда с префиксом /
-                print("Неизвестная команда. Введите /help для списка.")
+                response = execute_slash_command(line)
+                if response:
+                    print(f"[Вера] {response}")
                 continue
+            # Проверка команды выхода из Telegram-режима через консоль
+            if _telegram_mode and _telegram_mode.running:
+                if line.lower().strip() in _get_telegram_exit_commands():
+                    response = _stop_telegram_mode()
+                    print(f"[Вера] {response}")
+                    continue
+                else:
+                    print("[TG_MODE] Сейчас в Telegram-режиме. Напиши 'вернись' для выхода или /tg для статуса.")
+                    continue
             # Текстовый режим: любая строка без префикса '/' — это команда/запрос
-            try:
-                response = route_command(line)
-            except Exception as e:
-                response = f"Ошибка обработки запроса: {e}"
+            response = _handle_user_command(line)
             print(f"[Вера] {response}")
-            
-            # Логирование в память и историю
-            try:
-                _push_history("user", line)
-                _push_history("assistant", response)
-                history_logger.add_entry(line, response, command_type="text")
-            except Exception as e:
-                print(f"[HISTORY] Ошибка логирования: {e}")
         except Exception as e:
             retry_count += 1
             print(f"[STDIN] Ошибка чтения команд (попытка {retry_count}/{max_retries}): {e}")
             if retry_count >= max_retries:
-                print("[STDIN] КРИТИЧНО: stdin поток остановлен после множественных сбоев")
+                print("[STDIN] КРТЧНО: stdin поток остановлен после множественных сбоев")
                 break
             time.sleep(1)
 
@@ -229,9 +319,7 @@ def _flush_stdin_buffer():
     except Exception:
         pass
 
-_enable_windows_ansi()
-
-# Использование ConfigManager для централизованного доступа к конфигурации
+# спользование ConfigManager для централизованного доступа к конфигурации
 from main.config_manager import get_config, get_data_dir
 
 try:
@@ -259,38 +347,95 @@ def _remove_activation_words(text: str) -> str:
         kept.append(t)
     return " ".join(kept).strip()
 
-llama_kwargs = {
-    "model_path": cfg["model"]["path"],
-    "n_ctx": cfg["model"]["ctx_size"],
-    "verbose": False,
-}
-if "chat_format" in cfg["model"]:
-    llama_kwargs["chat_format"] = cfg["model"]["chat_format"]
+_model_cfg = cfg.get("model", {})
+_use_external = _model_cfg.get("use_external_server", False)
+_external_url = _model_cfg.get("external_api_url", "http://127.0.0.1:1234/v1")
 
-try:
-    llm = Llama(**llama_kwargs)
-except Exception as e:
-    print(f"[ERROR] Не удалось загрузить модель: {e}")
-    sys.exit(1)
+_thinking_lock = threading.Lock()
+_thinking_enabled = bool(_model_cfg.get("thinking_enabled", True))
+_reasoning_budget = _model_cfg.get("reasoning_budget", 1024)
+_max_thought_chars = _model_cfg.get("max_thought_chars", 4000)
+
+
+def _coerce_reasoning_budget(value, default: int) -> int:
+    try:
+        budget = int(value)
+    except Exception:
+        return default
+    if budget < -1:
+        return -1
+    return budget
+
+
+def _coerce_max_thought_chars(value, default: int) -> int:
+    try:
+        limit = int(value)
+    except Exception:
+        return default
+    if limit <= 0:
+        return default
+    return limit
+
+
+_reasoning_budget = _coerce_reasoning_budget(_reasoning_budget, 1024)
+_max_thought_chars = _coerce_max_thought_chars(_max_thought_chars, 4000)
+
+
+def get_thinking_mode() -> dict:
+    with _thinking_lock:
+        return {
+            "enabled": _thinking_enabled,
+            "reasoning_budget": _reasoning_budget,
+            "max_thought_chars": _max_thought_chars,
+        }
+
+
+def set_thinking_mode(enabled: bool, reasoning_budget: Optional[int] = None) -> dict:
+    global _thinking_enabled, _reasoning_budget
+    with _thinking_lock:
+        _thinking_enabled = bool(enabled)
+        if reasoning_budget is not None:
+            _reasoning_budget = _coerce_reasoning_budget(reasoning_budget, _reasoning_budget)
+        state = {
+            "enabled": _thinking_enabled,
+            "reasoning_budget": _reasoning_budget,
+            "max_thought_chars": _max_thought_chars,
+        }
+    _send_ws({"type": "thinking_mode", **state})
+    return state
+
+_llm_server = LlamaServer(
+    model_path=_model_cfg.get("path", "auto"),
+    ctx_size=_model_cfg.get("ctx_size", 16384),
+    port=_model_cfg.get("server_port", 29741),
+)
+
+if not _use_external:
+    try:
+        _llm_server.start()
+        llm = LlamaClient(port=_llm_server.port)
+    except Exception as e:
+        print(f"[LLM_CLIENT] Локальный LLM недоступен: {e}")
+        try:
+            config.set("model", "use_external_server", value=True)
+            config.save()
+        except Exception:
+            pass
+        _send_ws({
+            "type": "chat",
+            "role": "system",
+            "text": (
+                "Локальный LLM не найден или не запустился. "
+                f"Переключаюсь на внешний сервер: {_external_url}"
+            ),
+        })
+        llm = LlamaClient(base_url=_external_url)
+else:
+    print(f"[LLM_CLIENT] спользование внешнего сервера: {_external_url}")
+    llm = LlamaClient(base_url=_external_url)
+
 
 _print_banner_and_tips(cfg["activation_word"])
-
-# Простая краткосрочная память диалога (в пределах процесса)
-# Используем deque для автоматического управления размером
-_HISTORY_MAX_TURNS = 8
-CONV_HISTORY: deque = deque(maxlen=_HISTORY_MAX_TURNS * 2)
-
-def _push_history(role: str, content: str) -> None:
-    if not content:
-        return
-    CONV_HISTORY.append({"role": role, "content": content.strip()})
-    # deque автоматически удаляет старые элементы при достижении maxlen
-
-def _last_by_role(role: str) -> Optional[str]:
-    for msg in reversed(CONV_HISTORY):
-        if msg.get("role") == role and msg.get("content"):
-            return msg["content"]
-    return None
 
 _tts_queue: "queue.Queue[dict]" = queue.Queue()
 _tts_thread: Optional[threading.Thread] = None
@@ -308,6 +453,14 @@ def _tts_worker():
                 engine.setProperty('voice', voices[voice_index].id)
             engine.setProperty('rate', cfg["tts"]["rate"])
             engine.setProperty('volume', cfg["tts"]["volume"])
+
+            def on_start(name):
+                _send_ws({"type": "state", "value": "speaking"})
+            def on_end(name, completed):
+                _send_ws({"type": "state", "value": "listening"})
+            
+            engine.connect('started-utterance', on_start)
+            engine.connect('finished-utterance', on_end)
 
             # Непрерывный цикл обработки без повторного запуска run loop
             engine.startLoop(False)
@@ -354,10 +507,57 @@ def _tts_worker():
 _tts_thread = threading.Thread(target=_tts_worker, daemon=True)
 _tts_thread.start()
 
+_EMOJI_RE = re.compile(
+    "[" 
+    "\U0001F1E6-\U0001F1FF"  # flags
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FAFF"
+    "\u2600-\u26FF"          # misc symbols
+    "\u2700-\u27BF"          # dingbats
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_markdown_for_tts(text: str) -> str:
+    s = text or ""
+    # Блоки кода для озвучивания обычно бесполезны
+    s = re.sub(r"```[\s\S]*?```", " ", s)
+    # markdown-ссылки: оставляем только текст ссылки
+    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", s)
+    # inline-код
+    s = re.sub(r"`([^`]+)`", r"\1", s)
+    # Заголовки/цитаты/маркеры списков
+    s = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", s)
+    s = re.sub(r"(?m)^\s{0,3}>\s*", "", s)
+    s = re.sub(r"(?m)^\s*[-*+]\s+", "", s)
+    s = re.sub(r"(?m)^\s*\d+\.\s+", "", s)
+    # Частые inline-маркеры форматирования
+    s = s.replace("**", "").replace("__", "").replace("~~", "")
+    return s
+
+
+def _strip_emoji_for_tts(text: str) -> str:
+    s = text or ""
+    s = _EMOJI_RE.sub("", s)
+    # Zero-width joiner + variation selector (часто часть emoji)
+    s = s.replace("\u200d", "").replace("\ufe0f", "").replace("\ufe0e", "")
+    # Текстовые смайлики
+    s = re.sub(r"(?<!\w)([:;=8][\-^]?[)(DPpOo/\\|])(?!\w)", "", s)
+    return s
+
+
 def _clean_for_tts(text: str) -> str:
     """Удаляет из ответа источники и ссылки, чтобы TTS их не зачитывал. Преобразует годы в правильное произношение."""
     try:
-        s = text or ""
+        s = _strip_markdown_for_tts(text)
+        s = _strip_emoji_for_tts(s)
         # Удаляем блок вида "(источники: ... )" в конце
         s = re.sub(r"\s*\(источники?:.*?\)\s*$", "", s, flags=re.IGNORECASE | re.DOTALL)
         # Удаляем строки, начинающиеся с "источники:"
@@ -387,22 +587,40 @@ def speak(text: str):
 def interrupt_speech():
     _tts_queue.put({'cmd': 'stop'})
 
-print("Загрузка модели Vosk...")
+print("Загрузка модели Sherpa-ONNX...")
+stt_model_dir = "sherpa-onnx-streaming-zipformer-small-ru-vosk-2025-08-16"
 try:
-    # Читаем путь к модели из конфигурации
-    vosk_cfg = cfg.get("vosk", {})
-    model_path = vosk_cfg.get("model_path", "vosk-model-small-ru-0.22")  # Fallback для совместимости
-    samplerate = vosk_cfg.get("samplerate", 16000)
-    
-    print(f"[VOSK] Загрузка модели из: {model_path}")
-    vosk_model = vosk.Model(model_path)
-    print(f"[VOSK] Модель успешно загружена")
-except Exception as e:
-    print(f"[ERROR] Ошибка загрузки модели Vosk из '{model_path}': {e}")
-    print(f"[ERROR] Убедитесь, что путь к модели указан правильно в config.json")
-    sys.exit(1)
+    stt_cfg = cfg.get("sherpa_onnx", {})
+    stt_model_dir = stt_cfg.get("model_dir", stt_model_dir)
+    samplerate = int(stt_cfg.get("samplerate", 16000))
 
-rec = vosk.KaldiRecognizer(vosk_model, samplerate)
+    tokens_path = stt_cfg.get("tokens") or os.path.join(stt_model_dir, "tokens.txt")
+    encoder_path = stt_cfg.get("encoder") or os.path.join(stt_model_dir, "encoder.onnx")
+    decoder_path = stt_cfg.get("decoder") or os.path.join(stt_model_dir, "decoder.onnx")
+    joiner_path = stt_cfg.get("joiner") or os.path.join(stt_model_dir, "joiner.onnx")
+
+    print(f"[SHERPA] Загрузка модели из: {stt_model_dir}")
+    stt_recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+        tokens=tokens_path,
+        encoder=encoder_path,
+        decoder=decoder_path,
+        joiner=joiner_path,
+        num_threads=int(stt_cfg.get("num_threads", 1)),
+        sample_rate=samplerate,
+        feature_dim=int(stt_cfg.get("feature_dim", 80)),
+        decoding_method=stt_cfg.get("decoding_method", "greedy_search"),
+        provider=stt_cfg.get("provider", "cpu"),
+        enable_endpoint_detection=bool(stt_cfg.get("enable_endpoint_detection", True)),
+        rule1_min_trailing_silence=float(stt_cfg.get("rule1_min_trailing_silence", 2.4)),
+        rule2_min_trailing_silence=float(stt_cfg.get("rule2_min_trailing_silence", 1.2)),
+        rule3_min_utterance_length=float(stt_cfg.get("rule3_min_utterance_length", 300.0)),
+    )
+    stt_stream = stt_recognizer.create_stream()
+    print("[SHERPA] Модель успешно загружена")
+except Exception as e:
+    print(f"[ERROR] Ошибка загрузки модели Sherpa-ONNX из '{stt_model_dir}': {e}")
+    print("[ERROR] Проверьте раздел sherpa_onnx в config.json и наличие файлов tokens/encoder/decoder/joiner.")
+    sys.exit(1)
 
 q = queue.Queue()
 
@@ -417,44 +635,229 @@ def audio_callback(indata, frames, time_, status):
 # Настройки веб-поиска
 _WEB_CFG = cfg["web_search"]
 LAST_SEARCH_URLS: list[str] = []
-set_speak_callback(speak)
+
+def autonomous_speak(text: str):
+    """Озвучивает текст и одновременно отправляет его в UI."""
+    _send_ws({"type": "chat", "role": "system", "text": f"\u041d\u0430\u043f\u043e\u043c\u0438\u043d\u0430\u043d\u0438\u0435: {text}"})
+    speak(text)
+
+set_speak_callback(autonomous_speak)
 set_last_search_urls_ref(LAST_SEARCH_URLS)
 set_reminder_shutdown_event(_shutdown_event)  # Передаём event для graceful shutdown
 start_scheduler()
 
-# Инициализация планировщика запуска/закрытия приложений
-set_scheduled_speak_callback(speak)
-set_open_app_callback(open_app_by_name)
-set_close_app_callback(close_app_by_name)
-set_app_scheduler_shutdown_event(_shutdown_event)  # Передаём event для graceful shutdown
-start_app_scheduler()
-
-# Инициализация новых модулей
+# нициализация новых модулей
 DATA_DIR = get_data_dir()
 DATA_DIR.mkdir(exist_ok=True)
 
-task_manager = TaskManager(DATA_DIR / "tasks.json")
-user_profile = UserProfile(DATA_DIR / "user_profile.json")
-history_logger = HistoryLogger(DATA_DIR / "history.json", max_entries=1000)
+memory_manager = MemoryManager(DATA_DIR / "MEMORY.md")
 
-print(f"[INFO] Модули задач, профиля и истории инициализированы.")
+print(f"[INFO] Модули задач и памяти инициализированы.")
+print(f"[MEMORY] История диалога: {memory_manager.memory_path}")
+
+# Обработчик команд памяти (замена execute_profile_command)
+def execute_memory_command(text: str) -> Optional[str]:
+    """Обрабатывает команды памяти: запомни, забудь, что знаешь обо мне."""
+    lowered = text.lower().strip()
+    
+    # Команда "запомни"
+    if lowered.startswith("запомни"):
+        profile_key, value = extract_from_remember_command(text)
+        if value:
+            if profile_key:
+                memory_manager.set_profile(profile_key, value)
+                return f"Запомнила: {profile_key} — {value}."
+            else:
+                memory_manager.add_fact(value)
+                return f"Запомнила: {value}."
+        return "Что запомнить? Уточните."
+    
+    # Команда "что знаешь обо мне"
+    if re.search(r"(?:что\s+(?:ты\s+)?знаешь|расскажи)\s+(?:обо?\s+)?мне", lowered):
+        return memory_manager.get_all_info()
+    
+    # Сброс всей памяти ("забудь всё" / "забудь всё обо мне")
+    if re.search(r"забудь\s+(?:вс[её]|абсолютно\s+вс[её])(?:.*обо?\s+мне)?", lowered):
+        memory_manager.clear_all()
+        return "Забыла всё о вас. Память очищена."
+        
+    # Команда "забудь" про конкретный факт
+    if m := re.search(r"забудь\s+(?:про\s+)?(.+)", lowered):
+        fragment = m.group(1).strip()
+        if memory_manager.delete_fact(fragment):
+            return f"Забыла про {fragment}."
+        # Попробуем удалить из профиля
+        key = fragment.replace(' ', '_').lower()
+        if key in memory_manager.profile:
+            del memory_manager.profile[key]
+            memory_manager.save()
+            return f"Забыла про {fragment}."
+        return f"Не нашла информацию про {fragment}."
+    
+    # Запрос имени пользователя
+    name_patterns = [
+        r"\bмо[её]\s+им[яь]\b",
+        r"\bкак\s+мен[яь]\s+зовут\b",
+        r"\bты\s+знаешь\s+как\s+мен[яь]\s+зовут\b",
+        r"\bкак\s+мо[её]\s+им[яь]\b",
+        r"\bназови\s+мо[её]\s+им[яь]\b",
+    ]
+    if any(re.search(p, lowered) for p in name_patterns):
+        name = memory_manager.get_name()
+        if name:
+            return f"Вас зовут {name}."
+        return "Я не знаю вашего имени. Скажите 'запомни меня зовут' и ваше имя."
+    
+    # Команда обновления промпта (hot-reload)
+    reload_patterns = [
+        r"\b(?:обнови|обновить|перезагрузи|перечитай|reload)\s+(?:промпт|prompt|инструкции|настройки)\b",
+        r"\b(?:промпт|prompt)\s+(?:обнови|reload|перезагрузи)\b",
+    ]
+    if any(re.search(p, lowered) for p in reload_patterns):
+        try:
+            new_prompt = reload_prompt(DATA_DIR)
+            status = get_prompt_status(DATA_DIR)
+            return f"Промпт обновлён ({len(new_prompt)} символов).\n{status}"
+        except Exception as e:
+            return f"Ошибка обновления промпта: {e}"
+
+    # Запрос статуса промпта
+    if re.search(r"\b(?:статус|status)\s+промпт|\bпромпт\s+(?:статус|status)\b", lowered):
+        return get_prompt_status(DATA_DIR)
+
+    return None
 
 # Предрасчитанные обработчики для маршрутизации команд
 HANDLERS_WITH_MANAGERS = (
-    partial(execute_task_command, task_manager=task_manager),
-    partial(execute_profile_command, user_profile=user_profile),
-    partial(execute_history_command, history_logger=history_logger),
-    partial(execute_user_name_command, user_profile=user_profile),
+    execute_memory_command,
 )
 
+def _handle_user_command(text: str, file_name: str = None, file_context: str = None, source: str = 'chat') -> str:
+    """Обрабатывает команду, логирует в память, извлекает факты, возвращает ответ."""
 
-# Маршрутизация команд
-def route_command(text: str) -> str:
-    # Проверка на мультизадачность ПЕРВОЙ
-    is_multi, response = execute_multitask(text, route_command)
-    if is_multi:
-        return response
+    # Формируем полный текст для LLM (но в историю пойдёт чистый text + file_name)
+    full_prompt = text
+    if file_name and file_context:
+        full_prompt = f'Пользователь прикрепил файл "{file_name}". Содержимое файла уже извлечено ниже, НЕ вызывай read_document — файл уже прочитан.\n\nСодержимое файла:\n{file_context}'
+        if text:
+            full_prompt += f'\n---\nВопрос пользователя: {text}'
 
+    try:
+        response = route_command(full_prompt, source=source)
+    except Exception as e:
+        response = f"Ошибка обработки запроса: {e}"
+    
+    # Логирование в память (чистый текст!)
+    try:
+        display_text = text
+        if file_name:
+            display_text = f"📎 Прикреплённый файл: {file_name}\n{text}" if text else f"📎 Прикреплённый файл: {file_name}"
+
+        memory_manager.add_dialog_message("user", display_text)
+        # Отправляем сообщение пользователя в UI только если это голос, так как текстовый чат делает оптимистичный апдейт
+        if source == 'voice':
+            _send_ws({"type": "chat", "role": "user", "text": display_text})
+        
+        if response:
+            memory_manager.add_dialog_message("assistant", response)
+            _send_ws({"type": "chat", "role": "assistant", "text": response})
+    except Exception as e:
+        print(f"[MEMORY] Ошибка логирования: {e}")
+    
+    # Автоматическое извлечение фактов из сообщения пользователя
+    if should_extract_facts(text):
+        try:
+            facts = extract_facts(text)
+            for profile_key, value in facts:
+                if profile_key:
+                    memory_manager.set_profile(profile_key, value)
+                    print(f"[MEMORY] Запомнила: {profile_key} = {value}")
+                else:
+                    memory_manager.add_fact(value)
+                    print(f"[MEMORY] Новый факт: {value}")
+        except Exception as e:
+            print(f"[MEMORY] Ошибка извлечения фактов: {e}")
+    
+    return response
+
+
+# Очередь для асинхронной обработки команд (голосовых и текстовых из чата)
+# Элемент: (text, source) где source = 'voice' | 'chat'
+_command_queue: "queue.Queue[tuple]" = queue.Queue()
+
+def _command_worker():
+    """Поток обработки команд (голос и чат), чтобы LLM не блокировал аудиоцикл."""
+    while not _shutdown_event.is_set():
+        try:
+            item = _command_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        
+        # Поддержка разных форматов для обратной совместимости
+        if isinstance(item, tuple):
+            if len(item) == 4:
+                cmd, source, file_name, file_context = item
+            elif len(item) == 2:
+                cmd, source = item
+                file_name, file_context = None, None
+            else:
+                cmd, source = item[0], item[1]
+                file_name, file_context = None, None
+        else:
+            cmd, source = item, 'voice'
+            file_name, file_context = None, None
+            
+        _send_ws({"type": "state", "value": "thinking"})
+        
+        response = _handle_user_command(cmd, file_name, file_context, source=source)
+        
+        try:
+            print(f"[Вера] {response}")
+        except UnicodeEncodeError:
+            try:
+                print(f"[Вера] {response.encode('cp1251', errors='replace').decode('cp1251')}")
+            except Exception:
+                print("[Вера] (Нечитаемый ответ из-за кодировки консоли)")
+        
+        # Озвучиваем только голосовые команды
+        if source == 'voice':
+            speak(response)
+        else:
+            _send_ws({"type": "state", "value": "listening"})
+
+
+# Маршрутизация команд (атомарная, без планирования)
+
+def route_command_simple(text: str, source: str = 'chat') -> str:
+    """Р’С‹РїРѕР»РЅСЏРµС‚ РѕРґРЅСѓ Р°С‚РѕРР°СЂРЅСѓСЋ РєРѕРР°РЅРґСѓ Р±РµР· РїР»Р°РЅРёСЂРѕРІР°РЅРёСЏ."""
+    if _is_simple_greeting(text):
+        return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
+    
+    # Хардкодный обработчик для Telegram авторизации с номером (чтобы не терялся phone)
+    tg_auth_match = re.search(r"(?:авторизуй|подключи)\s+(?:телеграм|телогу|телеге)\s+(?:по\s+номеру\s+)?([\+\d\s\-\(\)]+)", text, re.IGNORECASE)
+    if tg_auth_match:
+        phone = tg_auth_match.group(1).strip()
+        # Номер должен содержать хотя бы несколько цифр
+        if len(re.sub(r"\D", "", phone)) >= 5:
+            args = {"action": "start_auth", "phone": phone}
+            print(f"[TOOL_CALL_HARDCODED] telegram: {args}")
+            _send_ws({"type": "tool_call", "name": "telegram", "args": args})
+            from main.tools.telegram import execute_telegram_tool
+            return execute_telegram_tool(args)
+            
+    # Хардкорный обработчик для ввода Telegram кода подтверждения
+    code_match = re.search(r"(?:мой\s+)?(?:код|пароль)\s*(?:в\s*телеге|в\s*телегу|в\s*телеграме|для\s*телеграма|для\s*телеги)?\s*[:\-]?\s*(\d{5})", text.strip(), re.IGNORECASE)
+    # ли если текст состоит просто из 5 цифр
+    if not code_match and re.fullmatch(r"\d{5}", text.strip()):
+        code_match = re.match(r"(\d{5})", text.strip())
+        
+    if code_match:
+        args = {"action": "enter_code", "code": code_match.group(1)}
+        print(f"[TOOL_CALL_HARDCODED] telegram: {args}")
+        _send_ws({"type": "tool_call", "name": "telegram", "args": args})
+        from main.tools.telegram import execute_telegram_tool
+        return execute_telegram_tool(args)
+            
     # Сначала проверяем обработчики с менеджерами
     for h in HANDLERS_WITH_MANAGERS:
         try:
@@ -485,269 +888,490 @@ def route_command(text: str) -> str:
         if res is not None:
             return res
     
-    return ask_llm(text)
+    return ask_llm(text, source=source)
 
 
-SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "system_prompt.txt"
-try:
-    with SYSTEM_PROMPT_PATH.open(encoding="utf-8") as f:
-        SYSTEM_PROMPT = f.read().strip()
-except Exception as e:
-    print(f"[ERROR] Не удалось загрузить system_prompt.txt: {e}")
-    SYSTEM_PROMPT = "Ты — Вера, голосовая помощница. Отвечаешь кратко на русском."
-
-def _parse_tool_call(text: str) -> Optional[dict]:
-    def _maybe_unwrap_code(s: str) -> str:
-        s = s.strip()
-        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, flags=re.DOTALL | re.IGNORECASE)
-        if m:
-            return m.group(1).strip()
-        return s
-
+def _web_search_for_presentation(query: str) -> str:
+    """Обёртка веб-поиска для генератора презентаций."""
     try:
-        patterns = [
-            r"<\|tool_call\|>\s*(.*?)\s*</\|tool_call\|>",  # с закрывающим тегом
-            r"<\|tool_call\|>\s*(.*?)\s*<\|tool_call\|>",   # два одинаковых тега
-            r"<tool_call>\s*(.*?)\s*</tool_call>",
-            r"<\|tool_call\|>\s*(\{.*?\})",                  # один тег + JSON
-        ]
-        for pat in patterns:
-            m = re.search(pat, text, flags=re.DOTALL | re.IGNORECASE)
-            if not m:
-                continue
-            payload = _maybe_unwrap_code(m.group(1))
-            try:
-                data = json.loads(payload)
-                if isinstance(data, dict) and data.get("name"):
-                    return data
-            except Exception as e:
-                continue
-        # Фолбэк: если вся строка — JSON с полем name
-        candidate = _maybe_unwrap_code(text)
-        try:
-            data = json.loads(candidate)
-            if isinstance(data, dict) and data.get("name"):
-                return data
-        except Exception:
-            pass
-    except Exception:
-        pass
-    return None
+        return web_search_answer(query, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS, detailed=True)
+    except Exception as e:
+        print(f"[PRES_SEARCH] Ошибка поиска: {e}")
+        return ""
 
-_WEB_SEARCH_KEYWORDS = (
+
+# Маршрутизация команд (главная функция)
+
+
+
+def route_command(text: str, source: str = 'chat') -> str:
+    """\u0413\u043b\u0430\u0432\u043d\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043a\u043e\u043c\u0430\u043d\u0434 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0449\u0438\u043a\u0430."""
+    lowered = text.lower().strip()
+    if any(t in lowered for t in _TELEGRAM_TRIGGERS):
+        return _start_telegram_mode()
+    if any(t in lowered for t in _get_telegram_exit_commands()) and _telegram_mode and _telegram_mode.running:
+        return _stop_telegram_mode()
+
+    if is_presentation_request(text):
+        msg, _ = execute_presentation_creation(
+            text=text,
+            llm=llm,
+            web_search_func=_web_search_for_presentation,
+            create_pptx_func=create_pptx,
+        )
+        return msg
+
+    return route_command_simple(text, source=source)
+
+def route_heartbeat_task(text: str) -> str:
+    """Специальный маршрутизатор для фоновых задач, который НЕ вызывает LLM для простых напоминаний."""
+    # Хардкодный обработчик Telegram
+    tg_auth_match = re.search(r"(?:авторизуй|подключи)\s+(?:телеграм|телогу|телеге)\s+(?:по\s+номеру\s+)?([\+\d\s\-\(\)]+)", text, re.IGNORECASE)
+    if tg_auth_match:
+        phone = tg_auth_match.group(1).strip()
+        if len(re.sub(r"\D", "", phone)) >= 5:
+            args = {"action": "start_auth", "phone": phone}
+            from main.tools.telegram import execute_telegram_tool
+            return execute_telegram_tool(args)
+
+    # Проверяем все хендлеры из route_command_simple
+    for h in HANDLERS_WITH_MANAGERS:
+        try:
+            res = h(text)
+            if res is not None: return res
+        except Exception: pass
+        
+    for h in (execute_currency_command, execute_weather_command, execute_wikipedia_command):
+        try:
+            res = h(text)
+            if res is not None: return res
+        except Exception: pass
+        
+    for h in HANDLERS:
+        try:
+            res = h(text)
+            if res is not None: return res
+        except Exception: pass
+
+    # Проверяем, не является ли это поисковым запросом ("прочитай новости", "какая погода", "кто такой")
+    # Если да, перенаправляем в LLM, где он сможет использовать инструменты
+    if _should_use_web_search(text):
+        return ask_llm(text)
+
+    # Если ни один системный инструмент не отреагировал, считаем это простым текстовым напоминанием.
+    # LLM не вызываем, просто возвращаем сам текст (Heartbeat скажет "Напоминание по задаче: {text}").
+    return text
+
+
+# ---- Системный промпт из модульных файлов ----
+# Файлы: data/IDENTITY.md, data/SOUL.md, data/TOOLS.md, data/USER.md
+# Для перезагрузки скажи "обнови промпт" или введи команду
+
+def get_system_prompt() -> str:
+    """Возвращает текущий системный промпт (с кешированием по mtime файлов)."""
+    return build_system_prompt(DATA_DIR)
+
+
+
+# Запускаем валидацию промпта при старте (чтобы сразу говорило об ошибке если файлы не те)
+try:
+    _startup_prompt = build_system_prompt(DATA_DIR)
+    if _startup_prompt:
+        print(f"[PROMPT] Системный промпт загружен ({len(_startup_prompt)} символов) | IDENTITY + SOUL + TOOLS + USER")
+    else:
+        print("[WARN] Промпт пустой — проверьте файлы IDENTITY.md, SOUL.md, TOOLS.md в data/")
+except Exception as e:
+    print(f"[ERROR] Не удалось загрузить промпт: {e}")
+
+
+
+
+_WEB_SEARCH_PATTERN = re.compile(
     # Финансы
-    "курс", "валют", "usd", "eur", "рубл", "btc", "биткоин", "акци", "индекс",
+    r"(?:курс|валют|usd|eur|рубл|btc|биткоин|акци|индекс"
     # Время и актуальность
-    "новост", "сегодня", "завтра", "сейчас", "онлайн", "в прямом эфире",
-    "расписани", "пробк", "трафик", "ковид", "эпидеми",
+    r"|новост|сегодня|завтра|сейчас|онлайн|в прямом эфире"
+    r"|расписани|пробк|трафик|ковид|эпидеми"
     # Даты выпуска и события
-    "когда вышел", "когда выпущен", "когда был выпущен", "дата выпуска", "дата выхода",
-    "когда появил", "когда создан", "когда основан",
+    r"|когда выш(?:ел|ла)|когда выпущен|когда был выпущен|дата выпуска|дата выхода"
+    r"|когда появил|когда создан|когда основан"
     # Определения и информация
-    "что означает", "как расшифровывается", "расшифровка",
+    r"|что означает|как расшифровывается|расшифровка"
+    r"|что за |что такое|компания "
     # Рейтинги и позиции
-    "какое место", "в топе", "рейтинг", "занимает место", "позиция в",
-    "лучш", "топ ", "список",
+    r"|какое место|в топе|рейтинг|занимает место|позиция в"
+    r"|лучш|топ |список"
     # Поисковые команды
-    "найди", "найти", "поищи", "поискать", "узнай", "узнать", "проверь", "проверить",
+    r"|найди|найти|поищи|поискать|узнай|узнать|проверь|проверить"
     # Технологии и продукты
-    "iphone", "rtx", "gtx", "playstation", "xbox", "nvidia", "amd",
+    r"|iphone|rtx|gtx|playstation|xbox|nvidia|amd)",
+    re.IGNORECASE
 )
+
 
 
 def _should_use_web_search(user_text: str) -> bool:
     try:
-        t = (user_text or "").lower()
-        return any(k in t for k in _WEB_SEARCH_KEYWORDS)
+        return bool(_WEB_SEARCH_PATTERN.search(user_text or ""))
     except Exception:
         return False
 
-def ask_llm(user_text: str) -> str:
-    # Быстрый путь: если есть ключевые слова веб-поиска — сразу ищем, минуя модель
+
+
+def _is_plain_code_request(user_text: str) -> bool:
+    text = (user_text or "").lower().strip()
+    if not text:
+        return False
+
+    code_intent = bool(
+        re.search(
+            "(\u043d\u0430\u043f\u0438\u0448\u0438|\u043f\u043e\u043a\u0430\u0436\u0438|\u0434\u0430\u0439|\u0441\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u0443\u0439|\u0441\u043e\u0437\u0434\u0430\u0439)\\s+.*(\u043a\u043e\u0434|\u0441\u043a\u0440\u0438\u043f\u0442|python|\u043f\u0438\u0442\u043e\u043d)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    file_intent = bool(
+        re.search(
+            "(\u0444\u0430\u0439\u043b|\u0441\u043e\u0445\u0440\u0430\u043d\u0438|\u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442|txt|md|docx|pptx|xlsx|\u0441\u043e\u0437\u0434\u0430\u0439\\s+\u0444\u0430\u0439\u043b|\u0437\u0430\u043f\u0438\u0448\u0438\\s+\u0432\\s+\u0444\u0430\u0439\u043b)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    run_intent = bool(
+        re.search(
+            "(\u0437\u0430\u043f\u0443\u0441\u0442\u0438|\u0432\u044b\u043f\u043e\u043b\u043d\u0438|\u043f\u0440\u043e\u0433\u043e\u043d\u0438|\u043f\u0440\u043e\u0432\u0435\u0440\u044c\\s+\u043a\u043e\u0434|\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\\s+\u0438\u043d\u0442\u0435\u0440\u043f\u0440\u0435\u0442\u0430\u0442\u043e\u0440)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+    return code_intent and not file_intent and not run_intent
+
+
+def ask_llm(user_text: str, source: str = 'chat', allow_tools: bool = True) -> str:
+    if _is_simple_greeting(user_text):
+        return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
+
     if _should_use_web_search(user_text):
         try:
-            # print(f"[FAST_PATH] Веб-поиск по ключевым словам: {user_text}")
-            return web_search_answer(user_text, _WEB_CFG, SYSTEM_PROMPT, llm, LAST_SEARCH_URLS)
+            _send_ws({"type": "tool_call", "name": "web_search", "args": {"query": user_text}})
+            return web_search_answer(user_text, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS)
         except Exception as e:
-            print(f"[WEB_SEARCH] Ошибка быстрого поиска: {e}")
-            # Продолжаем обычный путь через модель
-    
-    # Формируем системный промпт с информацией о пользователе
-    system_content = SYSTEM_PROMPT
-    
-    # Добавляем информацию из профиля пользователя
+            print(f"[WEB_SEARCH] \u041e\u0448\u0438\u0431\u043a\u0430 \u0431\u044b\u0441\u0442\u0440\u043e\u0433\u043e \u043f\u043e\u0438\u0441\u043a\u0430: {e}")
+
+    system_content = get_system_prompt()
     try:
-        profile_info = []
-        if user_profile.name:
-            profile_info.append(f"Имя пользователя: {user_profile.name}")
-        
-        notes = user_profile.get_all_notes()
-        if notes:
-            for note in notes[:5]:  # Берём до 5 заметок
-                profile_info.append(f"{note.key.replace('_', ' ')}: {note.value}")
-        
-        if profile_info:
-            system_content += "\n\nИнформация о пользователе:\n" + "\n".join(profile_info)
+        memory_context = memory_manager.get_context_for_prompt()
+        if memory_context:
+            system_content += "\n\n" + memory_context
     except Exception as e:
-        print(f"[LLM] Ошибка добавления профиля: {e}")
-    
+        print(f"[LLM] \u041e\u0448\u0438\u0431\u043a\u0430 \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0438\u044f \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442\u0430 \u043f\u0430\u043c\u044f\u0442\u0438: {e}")
+
     messages = [{"role": "system", "content": system_content}]
-    # Краткая история диалога
     try:
-        for m in CONV_HISTORY[-(_HISTORY_MAX_TURNS * 2):]:
+        for m in memory_manager.get_last_dialog():
             messages.append(m)
     except Exception:
         pass
     messages.append({"role": "user", "content": user_text})
-    allowed = {"temperature", "top_p", "top_k", "min_p", "repeat_penalty", "max_tokens", "seed", "stop"}
+
+    allowed = {
+        "temperature", "top_p", "top_k", "min_p", "repeat_penalty",
+        "presence_penalty", "frequency_penalty", "max_tokens", "seed", "stop"
+    }
     mcfg = cfg["model"]
     gen_args = {k: mcfg[k] for k in allowed if k in mcfg}
-    # Если max_tokens <= 0 — не ограничиваем длину ответа (не передаём параметр)
     if "max_tokens" in gen_args:
         try:
             if int(gen_args["max_tokens"]) <= 0:
                 del gen_args["max_tokens"]
         except Exception:
             pass
+
+    with _thinking_lock:
+        thinking_enabled = _thinking_enabled
+        reasoning_budget = _reasoning_budget
+    gen_args["chat_template_kwargs"] = {"enable_thinking": bool(thinking_enabled)}
+    gen_args["reasoning_budget"] = reasoning_budget if thinking_enabled else 0
+
+    effective_allow_tools = allow_tools and not _is_plain_code_request(user_text)
+    if effective_allow_tools:
+        gen_args["tools"] = TOOL_DEFINITIONS
+        gen_args["tool_choice"] = "auto"
+
+    use_stream = (source == 'chat')
+    if use_stream:
+        gen_args["stream"] = True
+
     try:
         result = llm.create_chat_completion(messages=messages, **gen_args)
-        assistant_reply = result["choices"][0]["message"]["content"].strip()
-        # Удаляем теги мышления, если они все же появились
-        assistant_reply = re.sub(r"<think>.*?</think>", "", assistant_reply, flags=re.DOTALL).strip()
     except Exception as e:
-        print(f"[LLM] Ошибка генерации: {e}")
-        return "Сейчас не могу ответить. Проверьте модель в config.json и попробуйте снова."
+        print(f"[LLM] \u041e\u0448\u0438\u0431\u043a\u0430 \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0438: {e}")
+        return "\u0421\u0435\u0439\u0447\u0430\u0441 \u043d\u0435 \u043c\u043e\u0433\u0443 \u043e\u0442\u0432\u0435\u0442\u0438\u0442\u044c. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435, \u0447\u0442\u043e LLM-\u0441\u0435\u0440\u0432\u0435\u0440 \u0437\u0430\u043f\u0443\u0449\u0435\u043d."
 
-    # Обработка вызова инструмента от модели
-    tool = _parse_tool_call(assistant_reply)
-    if tool:
-        tool_name = tool.get("name", "")
-        args = tool.get("arguments") or {}
-        
-        # web_search — встроенный инструмент
-        if tool_name == "web_search":
-            try:
-                query = str(args.get("query") or user_text).strip()
-                if not query:
-                    return "Что искать? Уточните запрос."
-                return web_search_answer(query, _WEB_CFG, SYSTEM_PROMPT, llm, LAST_SEARCH_URLS)
-            except Exception as e:
-                print(f"[WEB_SEARCH] Ошибка: {e}")
-                return "Не удалось выполнить веб-поиск сейчас."
-        
-        # Проверяем плагины из TOOLS
-        if tool_name in TOOLS:
-            try:
-                print(f"[TOOL_CALL] {tool_name}: {args}")
-                tool_result = TOOLS[tool_name](args)
-                
-                # Передаём результат модели для анализа/пересказа
-                if tool_result and len(tool_result) > 100:
-                    # Просим модель кратко пересказать
-                    summary_messages = [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_text},
-                        {"role": "assistant", "content": f"Я прочитала документ. Вот его содержимое:\n\n{tool_result}"},
-                        {"role": "user", "content": "Кратко перескажи основное содержание."}
-                    ]
-                    try:
-                        result = llm.create_chat_completion(messages=summary_messages, **gen_args)
-                        summary = result["choices"][0]["message"]["content"].strip()
-                        summary = re.sub(r"<think>.*?</think>", "", summary, flags=re.DOTALL).strip()
-                        return summary
-                    except Exception as e:
-                        print(f"[TOOL] Ошибка суммаризации: {e}")
-                        # Возвращаем сырой результат, обрезанный
-                        return tool_result[:2000] + "..." if len(tool_result) > 2000 else tool_result
-                
-                return tool_result
-            except Exception as e:
-                print(f"[TOOL] Ошибка выполнения {tool_name}: {e}")
-                return f"Ошибка выполнения {tool_name}: {e}"
+    if use_stream:
+        full_response = ""
+        full_thoughts = ""
+        in_think = False
+        streamed_tool_calls: dict[int, dict] = {}
 
-    # Очищаем tool call теги из ответа, если они остались (модель вернула их, но они не обработались)
-    assistant_reply = re.sub(r"<\|tool_call\|>.*?</\|tool_call\|>", "", assistant_reply, flags=re.DOTALL).strip()
-    assistant_reply = re.sub(r"<\|tool_call\|>.*?<\|tool_call\|>", "", assistant_reply, flags=re.DOTALL).strip()
-    assistant_reply = re.sub(r"<tool_call>.*?</tool_call>", "", assistant_reply, flags=re.DOTALL).strip()
-    assistant_reply = re.sub(r"<\|tool_call\|>\s*\{.*?\}", "", assistant_reply, flags=re.DOTALL).strip()
-    
-    return assistant_reply
+        def _append_chat(chunk_text: str):
+            nonlocal full_response
+            if not chunk_text:
+                return
+            full_response += chunk_text
+            _send_ws({"type": "chat_chunk", "text": chunk_text})
+
+        def _append_thought(chunk_text: str):
+            nonlocal full_thoughts
+            if not chunk_text:
+                return
+            if not thinking_enabled:
+                return
+            remaining = _max_thought_chars - len(full_thoughts)
+            if remaining <= 0:
+                return
+            safe_chunk = chunk_text[:remaining]
+            full_thoughts += safe_chunk
+            _send_ws({"type": "thought_chunk", "text": safe_chunk})
+
+        def _process_content_chunk(chunk_text: str):
+            nonlocal in_think
+            if not chunk_text:
+                return
+            while chunk_text:
+                if in_think:
+                    end_idx = chunk_text.find("</think>")
+                    if end_idx == -1:
+                        _append_thought(chunk_text)
+                        break
+                    _append_thought(chunk_text[:end_idx])
+                    chunk_text = chunk_text[end_idx + len("</think>"):]
+                    in_think = False
+                else:
+                    start_idx = chunk_text.find("<think>")
+                    if start_idx == -1:
+                        _append_chat(chunk_text)
+                        break
+                    _append_chat(chunk_text[:start_idx])
+                    chunk_text = chunk_text[start_idx + len("<think>"):]
+                    in_think = True
+
+        def _merge_tool_call_delta(delta_tool_calls):
+            if not isinstance(delta_tool_calls, list):
+                return
+            for tc in delta_tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                idx = tc.get("index", 0)
+                try:
+                    idx = int(idx)
+                except Exception:
+                    idx = 0
+                item = streamed_tool_calls.setdefault(
+                    idx,
+                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                tc_id = tc.get("id")
+                if tc_id:
+                    item["id"] = tc_id
+                tc_type = tc.get("type")
+                if tc_type:
+                    item["type"] = tc_type
+                fn_delta = tc.get("function") or {}
+                if not isinstance(fn_delta, dict):
+                    fn_delta = {}
+                fn_name = fn_delta.get("name")
+                if fn_name:
+                    item["function"]["name"] += fn_name
+                fn_args = fn_delta.get("arguments")
+                if fn_args:
+                    item["function"]["arguments"] += fn_args
+
+        for chunk in result:
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            if not isinstance(delta, dict):
+                continue
+            if delta.get("tool_calls"):
+                _merge_tool_call_delta(delta.get("tool_calls"))
+            reasoning_content = delta.get("reasoning_content") or ""
+            content = delta.get("content") or ""
+            if reasoning_content:
+                _append_thought(str(reasoning_content))
+            if content:
+                _process_content_chunk(str(content))
+
+        if streamed_tool_calls:
+            ordered_tool_calls = [
+                streamed_tool_calls[i]
+                for i in sorted(streamed_tool_calls.keys())
+                if (streamed_tool_calls[i].get("function", {}) or {}).get("name")
+            ]
+            if ordered_tool_calls:
+                return _handle_tool_calls(ordered_tool_calls, user_text)
+
+        final_reply = full_response.strip()
+        if final_reply:
+            return final_reply
+        if full_thoughts:
+            return "\u041d\u0435 \u043f\u043e\u043b\u0443\u0447\u0438\u043b\u0430 \u0444\u0438\u043d\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u043a\u0441\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438 \u043f\u043e\u0441\u043b\u0435 \u0440\u0430\u0441\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0439."
+        return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0439 \u043e\u0442\u0432\u0435\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438."
+
+    message = result.get("choices", [{}])[0].get("message", {})
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        return _handle_tool_calls(tool_calls, user_text)
+
+    reasoning_reply = (message.get("reasoning_content") or "").strip()
+    if thinking_enabled and reasoning_reply:
+        _send_ws({"type": "thought_chunk", "text": reasoning_reply[:_max_thought_chars]})
+
+    assistant_content = message.get("content") or ""
+    if isinstance(assistant_content, list):
+        parts = []
+        for part in assistant_content:
+            if isinstance(part, dict):
+                parts.append(str(part.get("text") or ""))
+            else:
+                parts.append(str(part))
+        assistant_content = "".join(parts)
+    assistant_content = str(assistant_content)
+
+    if thinking_enabled:
+        for think_part in re.findall(r"<think>(.*?)</think>", assistant_content, flags=re.DOTALL):
+            clean_think = think_part.strip()
+            if clean_think:
+                _send_ws({"type": "thought_chunk", "text": clean_think[:_max_thought_chars]})
+
+    assistant_reply = re.sub(r"<think>.*?</think>", "", assistant_content, flags=re.DOTALL).strip()
+    if assistant_reply:
+        return assistant_reply
+
+    if reasoning_reply:
+        return "\u041d\u0435 \u043f\u043e\u043b\u0443\u0447\u0438\u043b\u0430 \u0444\u0438\u043d\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u043a\u0441\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438 \u043f\u043e\u0441\u043b\u0435 \u0440\u0430\u0441\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0439."
+    return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0439 \u043e\u0442\u0432\u0435\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438."
+
+
+def _handle_tool_calls(tool_calls: list, user_text: str) -> str:
+    """\u041e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442 \u0432\u044b\u0437\u043e\u0432 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0430, \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0435\u043d\u043d\u044b\u0439 \u043c\u043e\u0434\u0435\u043b\u044c\u044e."""
+    tc = tool_calls[0] if tool_calls else {}
+    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+    tool_name = fn.get("name", "")
+
+    try:
+        args = json.loads(fn.get("arguments", "{}"))
+        if not isinstance(args, dict):
+            args = {}
+    except Exception:
+        args = {}
+
+    if tool_name in {"create_document", "code_interpreter"} and _is_plain_code_request(user_text):
+        return ask_llm(user_text, source='chat', allow_tools=False)
+
+    if tool_name == "web_search":
+        try:
+            query = str(args.get("query") or user_text).strip()
+            if not query:
+                return "\u041f\u0443\u0441\u0442\u043e\u0439 \u043f\u043e\u0438\u0441\u043a\u043e\u0432\u044b\u0439 \u0437\u0430\u043f\u0440\u043e\u0441."
+            detailed = bool(args.get("detailed", False))
+            return web_search_answer(query, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS, detailed=detailed)
+        except Exception as e:
+            print(f"[WEB_SEARCH] \u041e\u0448\u0438\u0431\u043a\u0430: {e}")
+            return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u0432\u0435\u0431-\u043f\u043e\u0438\u0441\u043a."
+
+    if tool_name in TOOLS:
+        try:
+            print(f"[TOOL_CALL] {tool_name}: {args}")
+            _send_ws({"type": "tool_call", "name": tool_name, "args": args})
+            return TOOLS[tool_name](args)
+        except Exception as e:
+            print(f"[TOOL] \u041e\u0448\u0438\u0431\u043a\u0430 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f {tool_name}: {e}")
+            return f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f {tool_name}: {e}"
+
+    print(f"[TOOL] \u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {tool_name}")
+    return "\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442."
+
 
 def run_main_loop():
     """Главный цикл прослушивания и обработки команд."""
-    global _shutdown_requested
-    
     print("[INFO] Система готова. Скажите ключевое слово.")
+    # Запускаем поток обработки голосовых команд (LLM не блокирует аудиоцикл)
+    _cmd_thread = threading.Thread(target=_command_worker, daemon=True)
+    _cmd_thread.start()
     # Теперь можно принимать команды из консоли — запускаем поток чтения stdin
     _flush_stdin_buffer()
     _stdin_thread = threading.Thread(target=_stdin_listener, daemon=True)
     _stdin_thread.start()
+
+    # нициализация планировщика периодических задач (Heartbeat)
+    set_heartbeat_speak_callback(autonomous_speak)
+    set_heartbeat_route_callback(route_heartbeat_task)
+    set_heartbeat_shutdown_event(_shutdown_event)
+    start_heartbeat_scheduler()
+
+    # Запускаем Heartbeat (фоновые периодические задачи)
+    # Настройки теперь контролируются самим планировщиком `heartbeat_commands.py`
+    # и хранятся в `heartbeat_tasks.json`.
+
     silence_timeout = cfg["silence_timeout"]
 
     with sd.RawInputStream(samplerate=samplerate, blocksize=8000, dtype='int16', channels=1, callback=audio_callback):
         last_audio_time = time.time()
         listening_for_command = False
-        while not _shutdown_requested:
+        while not _shutdown_event.is_set():
             data = q.get()
-            if rec.AcceptWaveform(data):
-                result = rec.Result()
-                text = json.loads(result)["text"].lower().strip()
-                if text:
-                    print(f"[ВЫ] {text}")
-                if not text:
-                    continue
+            pcm16 = array('h')
+            pcm16.frombytes(data)
+            samples = array('f', (x / 32768.0 for x in pcm16))
+            stt_stream.accept_waveform(samplerate, samples)
 
-                # Прерываем речь ТОЛЬКО если сказано ключевое слово (активация)
-                if _is_activation(text):
-                    interrupt_speech()
-                
-                # Останавливаем звонок таймера при активации или команде "стоп"
-                if is_timer_ringing():
-                    if _is_activation(text) or text.strip().lower() in ("стоп", "хватит", "отключи", "выключи"):
-                        stop_timer_ring()
-                        speak("Таймер отключён.")
-                        continue
+            partial = ""
+            while stt_recognizer.is_ready(stt_stream):
+                stt_recognizer.decode_stream(stt_stream)
+                partial = stt_recognizer.get_result(stt_stream).lower().strip()
 
-                if not listening_for_command:
-                    if _is_activation(text):
-                        command_text = _remove_activation_words(text)
-                        if command_text:
-                            user_command = command_text
-                        else:
-                            speak("Я слушаю. Какую команду выполнить?")
-                            listening_for_command = True
-                            last_audio_time = time.time()
-                            continue
-                    else:
-                        # Игнорируем речь без ключевого слова
-                        continue
-                else:
-                    user_command = text
-                    listening_for_command = False
+            if partial and listening_for_command:
+                last_audio_time = time.time()
 
-                response = route_command(user_command)
-                print(f"[Вера] {response}")
-                
-                # Логирование в память и историю
-                try:
-                    _push_history("user", user_command)
-                    _push_history("assistant", response)
-                    history_logger.add_entry(user_command, response)
-                except Exception as e:
-                    print(f"[HISTORY] Ошибка логирования: {e}")
-                
-                speak(response)
-            else:
-                # анализируем промежуточный результат, чтобы ловить ключевое слово без задержки
-                partial = json.loads(rec.PartialResult()).get("partial", "").lower().strip()
-                if partial:
-                    # Пока пользователь говорит — обновляем таймер тишины
-                    if listening_for_command:
-                        last_audio_time = time.time()
-
-                # проверяем тайм-аут тишины
+            if not stt_recognizer.is_endpoint(stt_stream):
                 if listening_for_command and (time.time() - last_audio_time > silence_timeout):
                     listening_for_command = False
+                continue
+
+            text = stt_recognizer.get_result(stt_stream).lower().strip()
+            stt_recognizer.reset(stt_stream)
+
+            if text:
+                print(f"[VOICE] {text}")
+            if not text:
+                continue
+
+            if _is_activation(text):
+                interrupt_speech()
+
+            if is_timer_ringing():
+                if _is_activation(text) or text.strip().lower() in ("стоп", "хватит", "отключи", "выключи"):
+                    stop_timer_ring()
+                    speak("Таймер отключён.")
+                    continue
+
+            if not listening_for_command:
+                if _is_activation(text):
+                    command_text = _remove_activation_words(text)
+                    if command_text:
+                        user_command = command_text
+                    else:
+                        speak("Я слушаю. Какую команду выполнить?")
+                        listening_for_command = True
+                        last_audio_time = time.time()
+                        continue
+                else:
+                    continue
+            else:
+                user_command = text
+                listening_for_command = False
+
+            _command_queue.put((user_command, 'voice'))
     
     # Главный цикл завершен
     sys.exit(0)
@@ -755,3 +1379,6 @@ def run_main_loop():
 
 if __name__ == "__main__":
     run_main_loop()
+
+
+

@@ -1,12 +1,13 @@
-vosk
+sherpa-onnx
 pyttsx3
 sounddevice
+websockets
+fastapi
 psutil
 requests
 beautifulsoup4
 pycaw
 comtypes
-llama-cpp-python
 pywin32
 win11toast
 screen-brightness-control
@@ -14,3 +15,7 @@ Pillow
 python-docx
 pypdf
 telethon
+python-pptx
+openpyxl
+python-multipart
+uvicorn

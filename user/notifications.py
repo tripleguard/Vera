@@ -1,5 +1,3 @@
-import time
-
 try:
     from win11toast import toast as win11toast_func
     _TOAST_AVAILABLE = True
@@ -36,10 +34,3 @@ def show_reminder_notification(title: str, message: str, duration: int = 10) -> 
         print(f"[NOTIFICATION] Ошибка показа уведомления: {e}")
         return False
 
-
-def show_timer_notification(timer_text: str) -> bool:
-    return show_reminder_notification("⏰ Таймер", timer_text, duration=10)
-
-
-def is_notifications_available() -> bool:
-    return _TOAST_AVAILABLE

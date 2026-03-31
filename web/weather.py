@@ -2,7 +2,7 @@ import re
 from typing import Optional
 import requests
 
-from web.web_utils import get_default_headers, fetch_url, search_duckduckgo
+from web.web_utils import get_default_headers, fetch_url, search_brave
 
 
 def _extract_city_from_text(t: str) -> Optional[str]:
@@ -145,7 +145,7 @@ def execute_weather_command(text: str) -> Optional[str]:
         # Ищем через fallback search
         search_query = f"погода {city_hint}"
         print(f"[WEATHER] Searching: {search_query}")
-        links = search_duckduckgo(search_query, max_results=5)
+        links = search_brave(search_query, max_results=5)
         
         if not links:
             return f"Не нашла информацию о погоде в городе {city_hint.title()}."

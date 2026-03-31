@@ -3,12 +3,12 @@ import time
 import datetime
 import threading
 import winsound
-from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass, asdict
 from main.lang_ru import TIME_UNITS, replace_number_words
 from main.config_manager import get_data_dir
 from user.json_storage import load_json, save_json
+from .scheduler_base import SchedulerBase, TIME_FORMAT, ts_from_float, ts_to_float
 
 
 # Путь к файлу напоминаний
@@ -22,10 +22,6 @@ except ImportError:
     _NOTIFICATIONS_ENABLED = False
 
 
-# Формат времени для хранения в JSON (человекочитаемый)
-_TIME_FORMAT = "%Y-%m-%d-%H-%M"
-
-
 @dataclass
 class _Reminder:
     ts: str  # Время в формате "2025-12-02-19-57"
@@ -36,32 +32,18 @@ class _Reminder:
     def timestamp(self) -> float:
         """Возвращает unix timestamp для сравнения."""
         try:
-            return datetime.datetime.strptime(self.ts, _TIME_FORMAT).timestamp()
+            return ts_to_float(self.ts)
         except Exception:
             return 0.0
     
     @staticmethod
     def from_timestamp(ts: float) -> str:
         """Конвертирует unix timestamp в строковый формат."""
-        return datetime.datetime.fromtimestamp(ts).strftime(_TIME_FORMAT)
+        return ts_from_float(ts)
 
 
 _scheduled: list[_Reminder] = []
-_scheduler_started = False
-_SPEAK_CB: Optional[Callable] = None
 _timer_ringing = False
-_shutdown_event: Optional[threading.Event] = None  # Event для graceful shutdown
-
-
-def set_shutdown_event(event: threading.Event) -> None:
-    """Устанавливает event для graceful shutdown."""
-    global _shutdown_event
-    _shutdown_event = event
-
-
-def set_speak_callback(cb: Callable) -> None:
-    global _SPEAK_CB
-    _SPEAK_CB = cb
 
 
 def stop_timer_ring() -> bool:
@@ -114,7 +96,7 @@ def _load_reminders() -> None:
         else:
             ts_str = ts_val
             try:
-                ts_float = datetime.datetime.strptime(ts_str, _TIME_FORMAT).timestamp()
+                ts_float = ts_to_float(ts_str)
             except Exception:
                 continue
         
@@ -128,23 +110,26 @@ def _load_reminders() -> None:
     print(f"[REMINDER] Загружено {len(_scheduled)} напоминаний")
 
 
-def _scheduler():
-    """Фоновый планировщик напоминаний и таймеров."""
-    while not (_shutdown_event and _shutdown_event.is_set()):
+class _ReminderScheduler(SchedulerBase):
+    """Планировщик напоминаний и таймеров."""
+
+    def __init__(self):
+        super().__init__(name="REMINDER", tick_interval=1.0)
+
+    def _on_start(self):
+        _load_reminders()
+
+    def _tick(self):
         now = time.time()
         for task in _scheduled[:]:
             if now >= task.timestamp:
                 print(f"[{'ТАЙМЕР' if task.is_timer else 'REMINDER'}] {task.message}")
                 
                 if task.is_timer:
-                    # Таймер: сразу звонок, потом голос
                     _start_timer_ring()
-                    if _SPEAK_CB:
-                        _SPEAK_CB(task.message + ". Скажите стоп чтобы отключить.")
+                    self.speak(task.message + ". Скажите стоп чтобы отключить.")
                 else:
-                    # Напоминание: голос + toast
-                    if _SPEAK_CB:
-                        _SPEAK_CB(task.message)
+                    self.speak(task.message)
                     if _NOTIFICATIONS_ENABLED:
                         try:
                             show_reminder_notification("⏰ Напоминание", task.message)
@@ -153,22 +138,20 @@ def _scheduler():
                 
                 _scheduled.remove(task)
                 _save_reminders()
-        
-        # Используем wait вместо sleep для быстрого реагирования на shutdown
-        if _shutdown_event:
-            _shutdown_event.wait(timeout=1)
-        else:
-            time.sleep(1)
-    print("[REMINDER] Scheduler остановлен")
 
+
+_reminder_scheduler = _ReminderScheduler()
+
+# Публичные функции-обёртки для обратной совместимости
+def set_speak_callback(cb: Callable) -> None:
+    _reminder_scheduler.set_speak_callback(cb)
+
+def set_shutdown_event(event: threading.Event) -> None:
+    _reminder_scheduler.set_shutdown_event(event)
 
 def start_scheduler() -> None:
     """Запускает планировщик напоминаний."""
-    global _scheduler_started
-    if not _scheduler_started:
-        _load_reminders()
-        threading.Thread(target=_scheduler, daemon=True).start()
-        _scheduler_started = True
+    _reminder_scheduler.start()
 
 
 def execute_time_command(text: str) -> Optional[str]:
@@ -248,7 +231,7 @@ def execute_reminder_command(text: str) -> Optional[str]:
         removed = 0
         for task in list(_scheduled):
             try:
-                if datetime.datetime.strptime(task.ts, _TIME_FORMAT).strftime("%H:%M") == target_str:
+                if datetime.datetime.strptime(task.ts, TIME_FORMAT).strftime("%H:%M") == target_str:
                     _scheduled.remove(task)
                     removed += 1
             except Exception:
@@ -370,7 +353,7 @@ def execute_reminder_command(text: str) -> Optional[str]:
         if target <= now_dt:
             target += datetime.timedelta(days=1)
         
-        ts_str = target.strftime(_TIME_FORMAT)
+        ts_str = target.strftime(TIME_FORMAT)
         _scheduled.append(_Reminder(ts_str, message))
         _save_reminders()
         return f"Напоминание на {target.strftime('%H:%M')} установлено."
@@ -394,7 +377,7 @@ def execute_list_reminders_command(text: str) -> Optional[str]:
     lines = [f"Активных напоминаний: {len(sorted_tasks)}"]
     for i, task in enumerate(sorted_tasks, 1):
         try:
-            dt = datetime.datetime.strptime(task.ts, _TIME_FORMAT)
+            dt = datetime.datetime.strptime(task.ts, TIME_FORMAT)
         except Exception:
             dt = datetime.datetime.now()
         time_str = dt.strftime('%H:%M')

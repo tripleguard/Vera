@@ -1,5 +1,4 @@
 import re
-import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -45,13 +44,13 @@ def execute_volume_command(text: str) -> Optional[str]:
     cleaned = replace_number_words(text.lower())
     
     # Поиск процентов
-    if m := re.search(r"\bгромкост[ьи]\b\s*(?:на\s*)?(\d+)\s*(?:%|процент)", cleaned, re.IGNORECASE):
+    if m := re.search(r"\b(?:громкост[ьи]|звук[ауе]?)\b\s*(?:на\s*)?(\d+)\s*(?:%|процент)", cleaned, re.IGNORECASE):
         pct = max(0, min(int(m.group(1)), 100))
         _set_master_volume(pct / 100)
         return f"Громкость установлена на {pct}%."
     
     # Поиск чисел 1-10 или 0-100
-    if m := re.search(r"\bгромкост[ьи]\b\s*(?:на\s*)?(\d+)\b", cleaned, re.IGNORECASE):
+    if m := re.search(r"\b(?:громкост[ьи]|звук[ауе]?)\b\s*(?:на\s*)?(\d+)\b", cleaned, re.IGNORECASE):
         n = int(m.group(1))
         pct = n * 10 if 0 <= n <= 10 else max(0, min(n, 100))
         _set_master_volume(pct / 100)
@@ -172,7 +171,10 @@ def execute_screenshot_command(text: str) -> Optional[str]:
         screenshot = ImageGrab.grab()
         screenshot.save(filepath)
         
-        return f"Скриншот сохранён в папке Screenshots"
+        return (
+            "Скриншот сохранён в папке Screenshots\n"
+            f"Файл создан: {filepath}"
+        )
     except Exception as e:
         print(f"[SCREENSHOT] Ошибка: {e}")
         return "Не удалось создать скриншот."
@@ -282,39 +284,3 @@ def execute_explorer_command(text: str) -> Optional[str]:
             return "Не удалось открыть проводник."
     
     return None
-
-
-def execute_internet_speed_command(text: str) -> Optional[str]:
-    #Измерение скорости интернета.
-    if not re.search(r"\b(скорост[ьи]|проверь|измерь|тест)\s+(интернет|сеть|соединени)\w*\b", text.lower()):
-        return None
-    
-    try:
-        import requests
-        import time
-        
-        # Используем загрузку файла с известного сервера
-        test_url = "http://speedtest.tele2.net/10MB.zip"
-        
-        print("[SPEED] Измерение скорости загрузки...")
-        
-        start_time = time.time()
-        response = requests.get(test_url, timeout=15, stream=True)
-        
-        downloaded = 0
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                downloaded += len(chunk)
-        
-        end_time = time.time()
-        duration = end_time - start_time
-        
-        if duration > 0:
-            # Вычисляем скорость в Мбит/с
-            speed_mbps = (downloaded * 8) / (duration * 1_000_000)
-            return f"Скорость загрузки: {speed_mbps:.1f} Мбит/с"
-        else:
-            return "Не удалось измерить скорость."
-    except Exception as e:
-        print(f"[SPEED] Ошибка: {e}")
-        return "Не удалось проверить скорость интернета. Попробуйте позже."

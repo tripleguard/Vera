@@ -6,10 +6,18 @@ from urllib.parse import urlparse, quote_plus
 from typing import Optional
 import requests
 
-from web.web_utils import get_default_headers, fetch_url, search_duckduckgo
+from web.web_utils import get_default_headers, search_brave, relevance_score, domain_boost, fetch_urls_parallel
 
-_WEB_SUMMARY_PROMPT = """Ты — Вера, голосовая помощница. Тебе дан контекст из веб-поиска.
-Твоя задача — дать краткий, точный ответ на вопрос пользователя на основе контекста."""
+_WEB_SUMMARY_PROMPT = (
+    "Тебе дан контекст из веб-поиска. "
+    "Дай краткий, точный ответ на вопрос пользователя на основе контекста."
+)
+
+_WEB_DETAILED_PROMPT = (
+    "Тебе дан контекст из веб-поиска. "
+    "Напиши МАКСИМАЛЬНО подробный, развернутый и информативный ответ "
+    "на основе этого контекста. Включи все важные факты, даты и детали."
+)
 
 _SEARCH_CACHE: "OrderedDict[str, tuple[float, str, list[str]]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
@@ -41,26 +49,12 @@ def _cache_store(key: str, answer: str, urls: list[str], max_entries: int) -> No
 
 
 def _get_search_links(query: str, web_cfg: dict) -> list[str]:
-    """Обёртка над search_duckduckgo с учётом конфига."""
+    """Обёртка над search_brave с учётом конфига."""
     max_results = int(web_cfg.get("max_sources", 3)) * int(web_cfg.get("oversample_links_factor", 2))
-    return search_duckduckgo(query, max_results)
+    return search_brave(query, max_results)
 
 
-def _relevance_score(query: str, text: str) -> int:
-    words = re.findall(r"[a-zA-Zа-яё0-9]+", query.lower())
-    if not words:
-        return 0
-    t_low = text.lower()
-    uniq_hits = sum(1 for w in set(words) if w and w in t_low)
-    total_hits = sum(t_low.count(w) for w in words if w)
-    return uniq_hits * 10 + total_hits
 
-
-def _domain_boost(query: str, domain: str) -> int:
-    """Добавляет бонус за доверенные домены."""
-    trusted = ["wikipedia.org", "ru.wikipedia.org", "habr.com", ]
-    d = domain.lower()
-    return 20 if any(t in d for t in trusted) else 0
 
 
 def execute_wikipedia_command(text: str) -> Optional[str]:
@@ -93,11 +87,11 @@ def execute_wikipedia_command(text: str) -> Optional[str]:
         return None
     return None
 
-def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_search_urls: list) -> str:
+def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_search_urls: list, detailed: bool = False) -> str:
     headers = get_default_headers()
     log_page_errors = bool(web_cfg.get("log_page_errors", False))
-    web_max_sources = int(web_cfg["max_sources"])
-    web_page_timeout = float(web_cfg["page_timeout_sec"])
+    web_max_sources = int(web_cfg.get("max_sources", 5))
+    web_page_timeout = float(web_cfg.get("page_timeout_sec", 3.0))
     cache_ttl = int(web_cfg.get("cache_ttl_sec", 0))
     cache_max_entries = int(web_cfg.get("cache_max_entries", 32))
     cache_key = (query or "").strip().lower()
@@ -149,15 +143,11 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
 
     total_context_limit = int(web_cfg.get("total_context_limit", 4500))
     
-    # Используем асинхронную загрузку вместо ThreadPoolExecutor
-    from web.async_fetch import fetch_urls_sync
-    
-    # Все параметры берем из конфига
-    early_stop_min = int(web_cfg.get("early_stop_min_sources", 3))  # Минимум источников для early stop
-    early_stop_timeout = float(web_cfg.get("early_stop_timeout", 5.0))  # Таймаут для early stop
+    early_stop_min = int(web_cfg.get("early_stop_min_sources", 3))
+    early_stop_timeout = float(web_cfg.get("early_stop_timeout", 5.0))
     
     # Асинхронная загрузка URL с early stopping
-    sources_raw = fetch_urls_sync(
+    sources_raw = fetch_urls_parallel(
         candidates,
         max_sources=web_max_sources,
         timeout=web_page_timeout,
@@ -180,9 +170,9 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
 
     def _score(u: str, t: str) -> int:
         try:
-            return _relevance_score(query, t) + _domain_boost(query, urlparse(u).netloc)
+            return relevance_score(query, t) + domain_boost(urlparse(u).netloc)
         except Exception:
-            return _relevance_score(query, t)
+            return relevance_score(query, t)
     sources.sort(key=lambda item: _score(item[0], item[1]), reverse=True)
     context_lines: list[str] = []
     acc = 0
@@ -205,19 +195,25 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
         )
 
 
+    prompt_to_use = _WEB_DETAILED_PROMPT if detailed else _WEB_SUMMARY_PROMPT
     extra_text = (" " + " ".join(extra_rules)) if extra_rules else ""
     messages = [
-        {"role": "system", "content": f"{_WEB_SUMMARY_PROMPT} Отвечай ТОЛЬКО по контексту. Не выдумывай.{extra_text} /no_think"},
-        {"role": "user", "content": f"Вопрос: {query}\nКонтекст:\n{context}\n\nКраткий ответ:"},
+        {"role": "system", "content": f"{prompt_to_use} Отвечай ТОЛЬКО по контексту. Не выдумывай.{extra_text}"},
+        {"role": "user", "content": f"Вопрос: {query}\nКонтекст:\n{context}\n\nОтвет:"},
     ]
 
     gen_args = {k: web_cfg[k] for k in ("temperature", "top_p") if k in web_cfg}
-    try:
+    gen_args["chat_template_kwargs"] = {"enable_thinking": False}
+    gen_args["reasoning_budget"] = 0
+    
+    # Расширяем лимит для детальных ответов
+    if detailed:
+        mt = 1500
+    else:
         mt = int(web_cfg.get("llm_max_tokens", 128))
-        if mt > 0:
-            gen_args["max_tokens"] = mt
-    except Exception:
-        gen_args["max_tokens"] = int(web_cfg.get("llm_max_tokens", 128))
+        
+    if mt > 0:
+        gen_args["max_tokens"] = mt
     try:
         result = llm.create_chat_completion(messages=messages, **gen_args)
         answer = result["choices"][0]["message"]["content"].strip()
