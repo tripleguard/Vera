@@ -5,6 +5,16 @@
 
 Полностью локальный голосовой агент с оффлайн-распознаванием речи, встроенной локальной моделью LLM и удобным графическим интерфейсом.
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=tripleguard%2FVera&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tripleguard/Vera&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tripleguard/Vera&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tripleguard/Vera&type=date&legend=bottom-right" />
+ </picture>
+</a>
+
 ## Содержание
 - [О проекте](#о-проекте)
 - [Возможности](#возможности)
