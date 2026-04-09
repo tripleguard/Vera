@@ -5,6 +5,14 @@
 
 Полностью локальный голосовой агент с оффлайн-распознаванием речи, встроенной локальной моделью LLM и удобным графическим интерфейсом.
 
+<a href="https://www.star-history.com/?repos=tripleguard%2FVera&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=tripleguard/Vera&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=tripleguard/Vera&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=tripleguard/Vera&type=date&legend=bottom-right" />
+ </picture>
+</a>
+
 ## Содержание
 - [О проекте](#о-проекте)
 - [Возможности](#возможности)
@@ -314,14 +322,6 @@ cd ui
 npm start
 ```
 Пайплайн на `run_vera.py` и PyInstaller удалён. Актуальный entry point — Electron (`ui/main.js`) + FastAPI backend (`server.py`).
-
-## Устранение неполадок
-- **Sherpa-ONNX не загружается:** проверьте наличие папки с моделью (например, `sherpa-onnx-streaming-zipformer-small-ru-vosk-2025-08-16`).
-- **LLM не работает / Ошибка контекста:** уделите внимание путям в `config.json` к GGUF модели или проверьте соединение с внешним эндпоинтом.
-- **Нет звука:** настройте `tts.voice_index`.
-- **Микрофон не работает:** проверьте настройки звука в Windows.
-- **Backend перезапускается:** в GUI появится служебное уведомление о перезапуске. Если попытки исчерпаны, перезапустите приложение и проверьте логи backend.
-- **Telegram не отвечает при существующей сессии:** при сетевой ошибке вида `[WinError 121]` GUI покажет уведомление о неполадках сети; после восстановления сети взаимодействие с Telegram возобновится.
 
 ## FAQ
 **Передает ли агент данные в интернет?**  
