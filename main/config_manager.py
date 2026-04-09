@@ -80,6 +80,24 @@ DEFAULT_CONFIG = {
     "heartbeat": {
         "enabled": True,
     },
+    "safety": {
+        "default_mode": "guarded",
+        "confirm_threshold": "high",
+        "background_policy": "deny-high",
+    },
+    "ui": {
+        "performance_mode": "balanced",
+        "animation_adaptive": True,
+    },
+    "plugins": {
+        "enabled": True,
+        "trust_policy": "signed+sandbox",
+        "inbox_path": "",
+        "sandbox_defaults": {
+            "network": "restricted",
+            "filesystem": "scoped",
+        },
+    },
 }
 
 _DEFAULT_DATA_FILES = [

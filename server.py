@@ -2,16 +2,72 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request
 import json
 import asyncio
+import argparse
 from contextlib import asynccontextmanager, suppress
 import threading
 import queue
 import sys
 import subprocess
 import time
+import os
+import runpy
+from pathlib import Path
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
+
+
+def _run_plugin_host(plugin_dir: str, entrypoint: str) -> int:
+    """Runs plugin entrypoint in a dedicated process mode (same for source and frozen exe)."""
+    try:
+        plugin_root = Path(plugin_dir).resolve()
+    except Exception:
+        print(f"[PLUGIN_HOST] Invalid plugin_dir: {plugin_dir}")
+        return 2
+
+    if not plugin_root.exists() or not plugin_root.is_dir():
+        print(f"[PLUGIN_HOST] Plugin directory not found: {plugin_root}")
+        return 2
+
+    entry_rel = (entrypoint or "plugin_entry.py").strip() or "plugin_entry.py"
+    entry_path = (plugin_root / entry_rel).resolve()
+    if not entry_path.exists() or not entry_path.is_file():
+        print(f"[PLUGIN_HOST] Entrypoint not found: {entry_path}")
+        return 2
+
+    os.environ.setdefault("VERA_PLUGIN_DIR", str(plugin_root))
+    os.environ.setdefault("VERA_PLUGIN_ENTRYPOINT", str(entry_path))
+
+    sys.path.insert(0, str(plugin_root))
+    try:
+        runpy.run_path(str(entry_path), run_name="__main__")
+    except SystemExit as e:
+        try:
+            return int(e.code)
+        except Exception:
+            return 0
+    except Exception as e:
+        print(f"[PLUGIN_HOST] Crash: {e}")
+        return 1
+    return 0
+
+
+def _maybe_run_plugin_host_mode() -> None:
+    if "--plugin-host" not in sys.argv:
+        return
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--plugin-host", action="store_true")
+    parser.add_argument("--plugin-dir", required=False, default="")
+    parser.add_argument("--entrypoint", required=False, default="plugin_entry.py")
+    args, _ = parser.parse_known_args()
+
+    code = _run_plugin_host(args.plugin_dir, args.entrypoint)
+    raise SystemExit(code)
+
+
+_maybe_run_plugin_host_mode()
 
 class ConnectionManager:
     def __init__(self):
@@ -31,7 +87,13 @@ class ConnectionManager:
             except Exception:
                 pass
 
-from main.agent import _ws_out_queue
+from main.agent import (
+    _ws_out_queue,
+    queue_command,
+    list_plugins_state,
+    set_plugin_enabled,
+    uninstall_plugin,
+)
 
 manager = ConnectionManager()
 
@@ -144,6 +206,42 @@ async def save_heartbeat_tasks_api(request: Request):
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
+
+@app.get("/api/plugins")
+async def get_plugins_api():
+    return JSONResponse(content=list_plugins_state())
+
+
+@app.post("/api/plugins/toggle")
+async def toggle_plugin_api(request: Request):
+    try:
+        payload = await request.json()
+        plugin_id = str(payload.get("plugin_id") or "").strip()
+        enabled = bool(payload.get("enabled", False))
+        if not plugin_id:
+            return JSONResponse(content={"error": "plugin_id is required"}, status_code=400)
+        ok = set_plugin_enabled(plugin_id, enabled)
+        if not ok:
+            return JSONResponse(content={"error": "plugin not found"}, status_code=404)
+        return JSONResponse(content={"status": "ok"})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.post("/api/plugins/uninstall")
+async def uninstall_plugin_api(request: Request):
+    try:
+        payload = await request.json()
+        plugin_id = str(payload.get("plugin_id") or "").strip()
+        if not plugin_id:
+            return JSONResponse(content={"error": "plugin_id is required"}, status_code=400)
+        ok = uninstall_plugin(plugin_id)
+        if not ok:
+            return JSONResponse(content={"error": "plugin not found"}, status_code=404)
+        return JSONResponse(content={"status": "ok"})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -166,8 +264,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             _ws_out_queue.put({"type": "chat", "role": "system", "text": response})
                     else:
                         # Обычная команда — в очередь с пометкой 'chat' и контекстом файла
-                        from main.agent import _command_queue
-                        _command_queue.put((text, 'chat', file_name, file_context))
+                        queue_command(text, source='chat', file_name=file_name, file_context=file_context, task_id=payload.get("task_id"))
                 
                 # Команда прерывания речи (от кнопки в UI)
                 elif payload.get("type") == "interrupt":

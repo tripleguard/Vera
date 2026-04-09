@@ -6,9 +6,9 @@ import winsound
 from typing import Optional, Callable
 from dataclasses import dataclass, asdict
 from main.lang_ru import TIME_UNITS, replace_number_words
-from main.config_manager import get_data_dir
+from main.config_manager import get_data_dir, get_install_root
 from user.json_storage import load_json, save_json
-from .scheduler_base import SchedulerBase, TIME_FORMAT, ts_from_float, ts_to_float
+from .scheduler_base import SchedulerBase, TIME_FORMAT, ts_from_float, ts_to_float, parse_time_str
 
 
 # Путь к файлу напоминаний
@@ -53,23 +53,39 @@ def stop_timer_ring() -> bool:
     _timer_ringing = False
     return was_ringing
 
-
 def is_timer_ringing() -> bool:
     return _timer_ringing
 
 
 def _start_timer_ring():
-    """Запускает звонок таймера в отдельном потоке."""
+    """Запускает звонок таймера (mp3)."""
     global _timer_ringing
     _timer_ringing = True
-    def ring():
-        while _timer_ringing:
-            try:
-                winsound.Beep(1000, 500)
-                time.sleep(0.3)
-            except Exception:
+    
+    def ring_thread():
+        try:
+            import ctypes
+            timer_path = str(get_install_root() / "timer.mp3").replace('/', '\\')
+            
+            mci = ctypes.windll.winmm.mciSendStringW
+            mci('close vera_timer_sound', None, 0, None)
+            err_open = mci(f'open "{timer_path}" type mpegvideo alias vera_timer_sound', None, 0, None)
+            err_play = mci('play vera_timer_sound repeat', None, 0, None)
+            
+            if err_open != 0 or err_play != 0:
+                print(f"[TIMER] Предупреждение: mciSendString вернул ошибку, код open: {err_open}, play: {err_play}")
+            
+            # Ждём, пока флаг не станет False
+            while _timer_ringing:
                 time.sleep(0.5)
-    threading.Thread(target=ring, daemon=True).start()
+                
+            # Закрываем устройство в ТОМ ЖЕ потоке, в котором оно было открыто
+            mci('stop vera_timer_sound', None, 0, None)
+            mci('close vera_timer_sound', None, 0, None)
+        except Exception as e:
+            print(f"[TIMER] Ошибка воспроизведения timer.mp3: {e}")
+            
+    threading.Thread(target=ring_thread, daemon=True).start()
 
 
 def _save_reminders() -> None:
@@ -231,7 +247,7 @@ def execute_reminder_command(text: str) -> Optional[str]:
         removed = 0
         for task in list(_scheduled):
             try:
-                if datetime.datetime.strptime(task.ts, TIME_FORMAT).strftime("%H:%M") == target_str:
+                if parse_time_str(task.ts).strftime("%H:%M") == target_str:
                     _scheduled.remove(task)
                     removed += 1
             except Exception:
@@ -377,7 +393,7 @@ def execute_list_reminders_command(text: str) -> Optional[str]:
     lines = [f"Активных напоминаний: {len(sorted_tasks)}"]
     for i, task in enumerate(sorted_tasks, 1):
         try:
-            dt = datetime.datetime.strptime(task.ts, TIME_FORMAT)
+            dt = parse_time_str(task.ts)
         except Exception:
             dt = datetime.datetime.now()
         time_str = dt.strftime('%H:%M')

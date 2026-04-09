@@ -1,48 +1,50 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Paperclip, X, Send, ExternalLink, FolderOpen, Sun, Moon, FileText, Mic, MicOff, Brain, ChevronDown, ChevronUp } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { connectSocketWithReconnect } from './services/socketService';
 
 import { Settings } from 'lucide-react';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 const shell = window.require ? window.require('electron').shell : null;
 
-// Парсинг источников из сообщения агента
 function parseMessage(text: string): { cleanText: string; sources: string[], docPath: string | null } {
     const sources: string[] = [];
-    let cleanText = text;
+    let cleanText = text || '';
     let docPath: string | null = null;
 
-    // Парсинг пути к созданному документу
-    const docPathRe = /(Презентация создана|Документ сохранен|Файл создан):\s*([A-Z]:\\[^\r\n]+)/i;
+    const docPathRe = /(Презентация создана|Документ сохранен|Документ сохранён|Файл создан):\s*([A-Z]:\\[^\r\n]+)/i;
     const docMatch = docPathRe.exec(cleanText);
     if (docMatch) {
         docPath = docMatch[2].trim();
-        // Можно не удалять путь из текста, пусть останется,
-        // либо можно удалить. Оставим для контекста.
     }
 
-    // Извлекаем блок вида "(источники: URL1 URL2 URL3)"
-    const sourceBlockRe = /\s*\(источники?:\s*([^)]+)\)/gi;
-    let match;
-    while ((match = sourceBlockRe.exec(text)) !== null) {
-        const urlsStr = match[1];
-        const urls = urlsStr.match(/https?:\/\/[^\s,)]+/g);
-        if (urls) sources.push(...urls);
+    const sourceBlockRe = /\s*\((?:источники?|sources?):\s*([^)]+)\)/gi;
+    let blockMatch: RegExpExecArray | null = null;
+    while ((blockMatch = sourceBlockRe.exec(cleanText)) !== null) {
+        const urls = (blockMatch[1] || '').match(/https?:\/\/[^\s,)]+/g);
+        if (urls) {
+            for (const url of urls) {
+                if (!sources.includes(url)) sources.push(url);
+            }
+        }
     }
     cleanText = cleanText.replace(sourceBlockRe, '');
 
-    // Также извлекаем отдельные URL (которые могут остаться в тексте)
     const standAloneUrls = cleanText.match(/https?:\/\/[^\s,)]+/g);
     if (standAloneUrls) {
         for (const url of standAloneUrls) {
             if (!sources.includes(url)) sources.push(url);
         }
+        // Do not show raw URLs in assistant text; show them only as source buttons.
+        cleanText = cleanText.replace(/https?:\/\/[^\s,)]+/g, '');
     }
 
-    // Очищаем лишние пробелы и пустые строки
-    cleanText = cleanText.replace(/\n{3,}/g, '\n\n').trim();
+    cleanText = cleanText
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 
     return { cleanText, sources, docPath };
 }
@@ -181,19 +183,37 @@ function AssistantMessageText({ text, isLightMode }: { text: string, isLightMode
 function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
     const [config, setConfig] = useState<any>(null);
     const [tasks, setTasks] = useState<any[]>([]);
+    const [plugins, setPlugins] = useState<any[]>([]);
+    const [pluginsLoading, setPluginsLoading] = useState(false);
+    const [pluginBusyId, setPluginBusyId] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
+
+    const fetchPlugins = useCallback(async () => {
+        setPluginsLoading(true);
+        try {
+            const res = await fetch('http://127.0.0.1:8000/api/plugins');
+            const data = await res.json();
+            setPlugins(Array.isArray(data) ? data : []);
+        } catch (err: any) {
+            setMessage('Ошибка загрузки плагинов: ' + (err?.message || String(err)));
+        } finally {
+            setPluginsLoading(false);
+        }
+    }, []);
 
     useEffect(() => {
         if (isOpen) {
             setMessage('');
             Promise.all([
                 fetch('http://127.0.0.1:8000/api/config').then(res => res.json()),
-                fetch('http://127.0.0.1:8000/api/heartbeat-tasks').then(res => res.json())
+                fetch('http://127.0.0.1:8000/api/heartbeat-tasks').then(res => res.json()),
+                fetch('http://127.0.0.1:8000/api/plugins').then(res => res.json())
             ])
-            .then(([cfgData, tasksData]) => {
+            .then(([cfgData, tasksData, pluginsData]) => {
                 setConfig(cfgData);
                 setTasks(Array.isArray(tasksData) ? tasksData : []);
+                setPlugins(Array.isArray(pluginsData) ? pluginsData : []);
             })
             .catch(err => setMessage('Ошибка загрузки настроек: ' + err.message));
         }
@@ -216,7 +236,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                     body: JSON.stringify({ tasks: tasks })
                 })
             ]);
-            setMessage("После сохранения, приложение автоматически перезагрузится...");
+            setMessage("После сохранения приложение автоматически перезапустится...");
 
             setTimeout(() => {
                 if (ipcRenderer) {
@@ -272,10 +292,10 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
             const sites = { ...(newConfig.sites || {}) };
 
             let count = 1;
-            let newKey = `новый_сайт_${count}`;
+            let newKey = `new_site_${count}`;
             while (sites[newKey] !== undefined) {
                 count++;
-                newKey = `новый_сайт_${count}`;
+                newKey = `new_site_${count}`;
             }
             sites[newKey] = '';
 
@@ -321,6 +341,52 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
 
     const handleRemoveTask = (index: number) => {
         setTasks(prev => prev.filter((_, i) => i !== index));
+    };
+
+    const togglePlugin = async (pluginId: string, enabled: boolean) => {
+        setPluginBusyId(pluginId);
+        // Оптимистичное обновление
+        setPlugins(prev => prev.map(p => p.plugin_id === pluginId ? { ...p, enabled } : p));
+        try {
+            const res = await fetch('http://127.0.0.1:8000/api/plugins/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ plugin_id: pluginId, enabled }),
+            });
+            if (!res.ok) {
+                throw new Error(await res.text());
+            }
+            await fetchPlugins();
+        } catch (err: any) {
+            setMessage('Ошибка переключения плагина: ' + (err?.message || String(err)));
+            // Откат
+            setPlugins(prev => prev.map(p => p.plugin_id === pluginId ? { ...p, enabled: !enabled } : p));
+            await fetchPlugins();
+        } finally {
+            setPluginBusyId(null);
+        }
+    };
+
+    const uninstallPlugin = async (pluginId: string) => {
+        setPluginBusyId(pluginId);
+        // Оптимистичное удаление
+        setPlugins(prev => prev.filter(p => p.plugin_id !== pluginId));
+        try {
+            const res = await fetch('http://127.0.0.1:8000/api/plugins/uninstall', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ plugin_id: pluginId }),
+            });
+            if (!res.ok) {
+                throw new Error(await res.text());
+            }
+            await fetchPlugins();
+        } catch (err: any) {
+            setMessage('Ошибка удаления плагина: ' + (err?.message || String(err)));
+            await fetchPlugins(); // Вернем обратно, загрузив с сервера
+        } finally {
+            setPluginBusyId(null);
+        }
     };
 
     return (
@@ -413,7 +479,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                     <div className="space-y-3 pt-1 border-t border-white/5">
                                         <div>
                                             <label className="block text-sm opacity-80 mb-1">
-                                                Лимит мышления (reasoning_budget)
+                                                Лимит размышления (reasoning_budget)
                                             </label>
                                             <div className="flex items-center gap-2">
                                                 <input
@@ -434,7 +500,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                                     className="w-24 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-white/30"
                                                 />
                                             </div>
-                                            <p className="text-[10px] opacity-40 mt-1">`-1` = без ограничений, `0` = без мышления</p>
+                                            <p className="text-[10px] opacity-40 mt-1">`-1` = без ограничений, `0` = без размышления</p>
                                         </div>
 
                                         <div>
@@ -460,7 +526,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                                     className="w-24 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-white/30"
                                                 />
                                             </div>
-                                            <p className="text-[10px] opacity-40 mt-1">Ограничивает объём блока «Размышления модели» в чате</p>
+                                            <p className="text-[10px] opacity-40 mt-1">Ограничивает объем блока «Размышления модели» в чате</p>
                                         </div>
                                     </div>
                                     <div className="pt-2 border-t border-white/5 space-y-4">
@@ -521,7 +587,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                         </div>
                                     </div>
                                     <div>
-                                        <label className="block text-sm opacity-80 mb-1">Индекс голоса системы</label>
+                                        <label className="block text-sm opacity-80 mb-1">Индекс системного голоса</label>
                                         <input
                                             type="number"
                                             value={config.tts?.voice_index || 0}
@@ -692,6 +758,74 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                     )}
                                 </div>
                             </section>
+
+                            <div className="h-px bg-white/5 w-full" />
+
+                            <section>
+                                <div className="flex items-center justify-between mb-4">
+                                    <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest">Менеджер плагинов</h3>
+                                    <button
+                                        onClick={fetchPlugins}
+                                        className="text-xs text-cyan-300 hover:text-cyan-200 font-medium px-2 py-1 bg-white/5 hover:bg-white/10 rounded-md transition-all"
+                                    >
+                                        Обновить
+                                    </button>
+                                </div>
+
+                                {pluginsLoading ? (
+                                    <div className="text-sm opacity-60">Загрузка плагинов...</div>
+                                ) : plugins.length === 0 ? (
+                                    <div className="text-sm opacity-50 px-2 py-4 border border-dashed border-white/10 rounded-lg text-center">
+                                        Нет установленных плагинов
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {plugins.map((plugin) => {
+                                            const pid = String(plugin.plugin_id || '');
+                                            const isBusy = pluginBusyId === pid;
+                                            const enabled = Boolean(plugin.enabled);
+                                            return (
+                                                <div key={pid} className="p-3 rounded-lg border border-white/10 bg-white/5">
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div>
+                                                            <div className="text-sm font-semibold">{plugin.name || pid}</div>
+                                                            <div className="text-xs opacity-60 mt-1">
+                                                                id: {pid} | v{plugin.version || '-'}
+                                                            </div>
+                                                            <div className="text-xs opacity-60 mt-1">
+                                                                доверие: {plugin.trust_level || '-'} | рантайм: {plugin.runtime_profile || '-'}
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <button
+                                                                disabled={isBusy}
+                                                                onClick={() => togglePlugin(pid, !enabled)}
+                                                                className={`px-2.5 py-1.5 text-xs rounded-md transition-all ${enabled
+                                                                    ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
+                                                                    : 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
+                                                                    } disabled:opacity-40`}
+                                                            >
+                                                                {enabled ? 'Выключить' : 'Включить'}
+                                                            </button>
+                                                            <button
+                                                                disabled={isBusy}
+                                                                onClick={() => uninstallPlugin(pid)}
+                                                                className="px-2.5 py-1.5 text-xs rounded-md bg-red-500/20 text-red-300 hover:bg-red-500/30 disabled:opacity-40"
+                                                            >
+                                                                Удалить
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-2 text-xs opacity-70">
+                                                        возможностей: {Array.isArray(plugin.capabilities) ? plugin.capabilities.length : 0}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </section>
                         </div>
                     )}
                 </div>
@@ -736,56 +870,48 @@ function WidgetView() {
     const [status, setStatus] = useState('listening'); // 'listening', 'thinking', 'speaking'
 
     useEffect(() => {
-        let ws: WebSocket;
-        let reconnectTimer: number;
-
-        const connect = () => {
-            ws = new WebSocket('ws://127.0.0.1:8000/ws');
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'state') setStatus(data.value);
-                } catch (e) { }
-            };
-            ws.onclose = () => {
-                reconnectTimer = window.setTimeout(connect, 2000);
-            };
-        };
-        connect();
-
-        return () => {
-            window.clearTimeout(reconnectTimer);
-            if (ws) ws.close();
-        };
+        return connectSocketWithReconnect(
+            'ws://127.0.0.1:8000/ws',
+            {
+                onMessage: (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'state') setStatus(data.value);
+                    } catch (e) { }
+                },
+            },
+            2000,
+        );
     }, []);
 
     const handleClick = () => {
         if (ipcRenderer) ipcRenderer.send('toggle-chat');
     };
 
-    // Цвета и анимации в зависимости от состояния
+    // Р¦РІРµС‚Р° Рё Р°РЅРёРјР°С†РёРё РІ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РѕС‚ СЃРѕСЃС‚РѕСЏРЅРёСЏ
     const isSpeaking = status === 'speaking';
     const isThinking = status === 'thinking';
+    const reduceMotion = true;
 
     return (
         <div
             className="w-full h-full flex items-center justify-center bg-[#111111]/90 backdrop-blur-md rounded-2xl border border-white/10 shadow-2xl drag-region select-none overflow-hidden hover:bg-[#1a1a1a]/90 transition-colors"
         >
             <div className="relative flex items-center justify-center w-12 h-12 cursor-pointer no-drag-region" onClick={handleClick}>
-                {/* Пульсирующая обводка при разговоре */}
+                {/* РџСѓР»СЊСЃРёСЂСѓСЋС‰Р°СЏ РѕР±РІРѕРґРєР° РїСЂРё СЂР°Р·РіРѕРІРѕСЂРµ */}
                 {isSpeaking && (
                     <div className="absolute inset-0 bg-white rounded-full opacity-75 animate-ping-slow transition-all"></div>
                 )}
 
-                {/* Главный кружок */}
+                {/* Р“Р»Р°РІРЅС‹Р№ РєСЂСѓР¶РѕРє */}
                 <motion.div
                     animate={{
-                        scale: isSpeaking ? [1, 1.1, 1] : isThinking ? [1, 0.9, 1] : 1,
+                        scale: reduceMotion ? 1 : (isSpeaking ? [1, 1.1, 1] : isThinking ? [1, 0.9, 1] : 1),
                         backgroundColor: isSpeaking ? '#ffffff' : isThinking ? '#e2e8f0' : '#64748b'
                     }}
                     transition={{
-                        duration: isSpeaking ? 0.8 : isThinking ? 1.5 : 0.3,
-                        repeat: (isSpeaking || isThinking) ? Infinity : 0,
+                        duration: reduceMotion ? 0.2 : (isSpeaking ? 0.8 : isThinking ? 1.5 : 0.3),
+                        repeat: reduceMotion ? 0 : ((isSpeaking || isThinking) ? Infinity : 0),
                         ease: "easeInOut"
                     }}
                     className={`relative w-8 h-8 rounded-full shadow-lg ${!isSpeaking && !isThinking ? 'opacity-70 hover:opacity-100' : ''}`}
@@ -803,6 +929,81 @@ interface Message {
     file?: string;
     streaming?: boolean;
 }
+
+const MessageBubble = memo(function MessageBubble({
+    msg,
+    isLightMode,
+}: {
+    msg: Message;
+    isLightMode: boolean;
+}) {
+    return (
+        <div
+            className={`max-w-[85%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed relative select-text cursor-text ${msg.role === 'user'
+                ? (isLightMode ? 'bg-[#e5e7eb] text-gray-900 font-medium shadow-sm border border-gray-300' : 'bg-white/10 text-white font-medium border border-white/10')
+                : msg.role === 'system'
+                    ? (isLightMode ? 'bg-black/5 text-gray-500 text-sm border border-gray-200 indent-0 italic' : 'bg-white/5 text-white/50 text-sm border border-white/5 italic')
+                    : (isLightMode ? 'bg-[#ffffff] text-gray-800 border border-gray-200 shadow-sm' : 'bg-white/5 text-gray-200 border border-white/10')
+                }`}
+        >
+            {msg.role === 'user' || msg.role === 'system' ? (
+                <>
+                    {msg.text && <div>{msg.text}</div>}
+                    {msg.file && (
+                        <div className={`flex items-center gap-2 mt-2 px-3 py-2 rounded-lg text-[13px] ${isLightMode
+                            ? 'bg-blue-700/20 text-white/90'
+                            : 'bg-black/10 text-black/70'
+                            }`}>
+                            <FileText size={16} className="flex-shrink-0" />
+                            <span className="truncate">{msg.file}</span>
+                        </div>
+                    )}
+                </>
+            ) : (() => {
+                const { cleanText, sources, docPath } = parseMessage(msg.text);
+                return (
+                    <>
+                        {msg.thoughts && <ThinkingBlock thoughts={msg.thoughts} isLightMode={isLightMode} />}
+                        <AssistantMessageText text={cleanText} isLightMode={isLightMode} />
+                        {sources.length > 0 && (
+                            <div className={`flex flex-wrap gap-1.5 mt-3 pt-2 border-t ${isLightMode ? 'border-gray-200' : 'border-white/5'}`}>
+                                {sources.map((url, i) => (
+                                    <button
+                                        key={i}
+                                        onClick={() => shell?.openExternal(url)}
+                                        className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] border rounded-lg transition-all cursor-pointer ${isLightMode
+                                            ? 'bg-black/5 hover:bg-black/10 border-gray-200 text-gray-600 hover:text-gray-900'
+                                            : 'bg-white/10 hover:bg-white/20 border-white/10 text-white/60 hover:text-white/90'
+                                            }`}
+                                        title={url}
+                                    >
+                                        <ExternalLink size={10} />
+                                        {getDomain(url)}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                        {docPath && (
+                            <div className={`flex flex-wrap gap-1.5 mt-2 pt-2 border-t ${isLightMode ? 'border-gray-200' : 'border-white/5'}`}>
+                                <button
+                                    onClick={() => shell?.showItemInFolder(docPath)}
+                                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] border rounded-lg transition-all cursor-pointer font-medium ${isLightMode
+                                        ? 'bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-700 hover:text-blue-800'
+                                        : 'bg-blue-500/20 hover:bg-blue-500/30 border-blue-500/30 text-blue-200 hover:text-white'
+                                        }`}
+                                    title={docPath}
+                                >
+                                                        <FolderOpen size={12} />
+                                                        Открыть папку с файлом
+                                                    </button>
+                                                </div>
+                                            )}
+                    </>
+                );
+            })()}
+        </div>
+    );
+});
 
 function ChatView() {
     const [messages, setMessages] = useState<Message[]>([]);
@@ -827,13 +1028,17 @@ function ChatView() {
 
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement | null>(null);
-    const pendingUserMsgs = useRef<Set<string>>(new Set()); // Трекер оптимистичных сообщений
+    const pendingUserMsgs = useRef<Set<string>>(new Set()); // РўСЂРµРєРµСЂ РѕРїС‚РёРјРёСЃС‚РёС‡РЅС‹С… СЃРѕРѕР±С‰РµРЅРёР№
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const [attachedFile, setAttachedFile] = useState<File | null>(null);
     const [isUploading, setIsUploading] = useState(false);
     const [isMuted, setIsMuted] = useState(false);
+    const [renderWindow, setRenderWindow] = useState(180);
     const thinkingEnabledRef = useRef(thinkingEnabled);
     const reasoningBudgetRef = useRef(reasoningBudget);
+    const pendingChunksRef = useRef<any[]>([]);
+    const chunkFlushRafRef = useRef<number | null>(null);
+    const ignoreLateChunksRef = useRef(false);
 
     const findLastStreamingAssistantIndex = useCallback((arr: Message[]): number => {
         for (let i = arr.length - 1; i >= 0; i--) {
@@ -843,43 +1048,130 @@ function ChatView() {
         return -1;
     }, []);
 
-    useEffect(() => {
-        let ws: WebSocket;
-        let reconnectTimer: number;
+    const reduceMotion = true;
 
-        const connect = () => {
-            ws = new WebSocket('ws://127.0.0.1:8000/ws');
-            wsRef.current = ws;
+    const visibleMessages = useMemo(() => {
+        if (messages.length <= renderWindow) return messages;
+        return messages.slice(-renderWindow);
+    }, [messages, renderWindow]);
+    const pushSystemMessage = useCallback((text: string) => {
+        setMessages(prev => [...prev, { role: 'system', text }]);
+    }, []);
 
-            ws.onopen = () => {
-                setIsConnected(true);
-                ws.send(JSON.stringify({
-                    type: 'set_thinking_mode',
-                    enabled: thinkingEnabledRef.current,
-                    reasoning_budget: reasoningBudgetRef.current
-                }));
-                ws.send(JSON.stringify({ type: 'get_thinking_mode' }));
-            };
-            ws.onerror = () => setIsConnected(false);
+    const flushChunkBatch = useCallback(() => {
+        chunkFlushRafRef.current = null;
+        const batch = pendingChunksRef.current;
+        pendingChunksRef.current = [];
+        if (batch.length === 0) return;
 
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'state') setStatus(data.value);
-                    if (data.type === 'thinking_mode') {
-                        if (typeof data.enabled === 'boolean') {
-                            setThinkingEnabled(data.enabled);
-                        }
-                        if (typeof data.reasoning_budget === 'number') {
-                            setReasoningBudget(data.reasoning_budget);
-                        }
+        setMessages(prev => {
+            let next = [...prev];
+            for (const chunk of batch) {
+                const streamIdx = findLastStreamingAssistantIndex(next);
+                if (streamIdx !== -1) {
+                    const updated = { ...next[streamIdx] };
+                    if (chunk.type === 'chat_chunk') {
+                        updated.text += String(chunk.text || '');
+                    } else {
+                        updated.thoughts = (updated.thoughts || '') + String(chunk.text || '');
                     }
-                    if (data.type === 'chat') {
-                        // Пропускаем только те user-сообщения, которые уже показаны оптимистично (из чата)
-                        if (data.role === 'user' && pendingUserMsgs.current.has(data.text)) {
-                            pendingUserMsgs.current.delete(data.text);
-                        } else {
+                    next = [...next.slice(0, streamIdx), updated, ...next.slice(streamIdx + 1)];
+                } else {
+                    next = [
+                        ...next,
+                        {
+                            role: 'assistant',
+                            text: chunk.type === 'chat_chunk' ? String(chunk.text || '') : '',
+                            thoughts: chunk.type === 'thought_chunk' ? String(chunk.text || '') : '',
+                            streaming: true,
+                        },
+                    ];
+                }
+            }
+            return next;
+        });
+    }, [findLastStreamingAssistantIndex]);
+
+    const enqueueChunk = useCallback((chunk: any) => {
+        if (ignoreLateChunksRef.current) {
+            return;
+        }
+        pendingChunksRef.current.push(chunk);
+        if (chunkFlushRafRef.current == null) {
+            chunkFlushRafRef.current = window.requestAnimationFrame(flushChunkBatch);
+        }
+    }, [flushChunkBatch]);
+
+    useEffect(() => {
+        return connectSocketWithReconnect(
+            'ws://127.0.0.1:8000/ws',
+            {
+                onOpen: (ws) => {
+                    wsRef.current = ws;
+                    setIsConnected(true);
+                    ws.send(JSON.stringify({
+                        type: 'set_thinking_mode',
+                        enabled: thinkingEnabledRef.current,
+                        reasoning_budget: reasoningBudgetRef.current,
+                    }));
+                    ws.send(JSON.stringify({ type: 'get_thinking_mode' }));
+                },
+                onError: () => setIsConnected(false),
+                onClose: () => setIsConnected(false),
+                onMessage: (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'state') {
+                            setStatus(data.value);
+                            return;
+                        }
+                        if (data.type === 'thinking_mode') {
+                            if (typeof data.enabled === 'boolean') setThinkingEnabled(data.enabled);
+                            if (typeof data.reasoning_budget === 'number') setReasoningBudget(data.reasoning_budget);
+                            return;
+                        }
+                        if (data.type === 'task_status') {
+                            if (data.state === 'queued' || data.state === 'running') {
+                                ignoreLateChunksRef.current = false;
+                            }
+                            if (data.state === 'failed' && data.reason) {
+                                pushSystemMessage(`Задача завершилась с ошибкой: ${data.reason}`);
+                            }
+                            return;
+                        }
+                        if (data.type === 'action_explain') {
+                            // Keep explain events internal (audit/debug), do not show in chat UI.
+                            return;
+                        }
+                        if (data.type === 'plugin_discovered') {
+                            pushSystemMessage(`Найден пакет плагина: ${data.path}`);
+                            return;
+                        }
+                        if (data.type === 'plugin_install_status') {
+                            pushSystemMessage(`Plugin ${data.plugin_id || ''}: ${data.status}${data.reason ? ` (${data.reason})` : ''}`);
+                            return;
+                        }
+                        if (data.type === 'plugin_permission_request') {
+                            pushSystemMessage(`Плагин ${data.plugin_id} требует подтверждения разрешений.`);
+                            return;
+                        }
+                        if (data.type === 'plugin_capability_added') {
+                            const title = data?.capability?.title || data?.capability?.id || 'new capability';
+                            pushSystemMessage(`Подключена capability плагина: ${title}`);
+                            return;
+                        }
+                        if (data.type === 'chat') {
+                            if (data.role === 'user' && pendingUserMsgs.current.has(data.text)) {
+                                pendingUserMsgs.current.delete(data.text);
+                                return;
+                            }
                             if (data.role === 'assistant') {
+                                ignoreLateChunksRef.current = true;
+                                pendingChunksRef.current = [];
+                                if (chunkFlushRafRef.current != null) {
+                                    window.cancelAnimationFrame(chunkFlushRafRef.current);
+                                    chunkFlushRafRef.current = null;
+                                }
                                 setMessages(prev => {
                                     const streamIdx = findLastStreamingAssistantIndex(prev);
                                     if (streamIdx !== -1) {
@@ -893,48 +1185,21 @@ function ChatView() {
                             } else {
                                 setMessages(prev => [...prev, { role: data.role, text: data.text }]);
                             }
+                            return;
                         }
-                    }
-                    if (data.type === 'chat_chunk' || data.type === 'thought_chunk') {
-                        setMessages(prev => {
-                            const streamIdx = findLastStreamingAssistantIndex(prev);
-                            if (streamIdx !== -1) {
-                                const updated = { ...prev[streamIdx] };
-                                if (data.type === 'chat_chunk') {
-                                    updated.text += data.text;
-                                } else {
-                                    updated.thoughts = (updated.thoughts || "") + data.text;
-                                }
-                                return [...prev.slice(0, streamIdx), updated, ...prev.slice(streamIdx + 1)];
-                            } else {
-                                return [...prev, {
-                                    role: 'assistant',
-                                    text: data.type === 'chat_chunk' ? data.text : "",
-                                    thoughts: data.type === 'thought_chunk' ? data.text : "",
-                                    streaming: true
-                                }];
-                            }
-                        });
-                    }
-                    if (data.type === 'tool_call') {
-                        setMessages(prev => [...prev, { role: 'system', text: `Использую инструмент: ${data.name}...` }]);
-                    }
-                } catch (e) { }
-            };
-
-            ws.onclose = () => {
-                setIsConnected(false);
-                reconnectTimer = window.setTimeout(connect, 2000);
-            };
-        };
-        connect();
-
-        return () => {
-            window.clearTimeout(reconnectTimer);
-            if (ws) ws.close();
-        };
-    }, [findLastStreamingAssistantIndex]);
-
+                        if (data.type === 'chat_chunk' || data.type === 'thought_chunk') {
+                            enqueueChunk(data);
+                            return;
+                        }
+                        if (data.type === 'tool_call') {
+                            pushSystemMessage(`Использую инструмент: ${data.name}...`);
+                        }
+                    } catch (e) { }
+                },
+            },
+            2000,
+        );
+    }, [enqueueChunk, findLastStreamingAssistantIndex, pushSystemMessage]);
     useEffect(() => {
         if (!ipcRenderer) {
             return;
@@ -981,8 +1246,8 @@ function ChatView() {
     }, []);
 
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+        messagesEndRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' });
+    }, [messages, reduceMotion]);
 
     useEffect(() => {
         localStorage.setItem('vera_light_mode', isLightMode.toString());
@@ -1003,26 +1268,46 @@ function ChatView() {
         reasoningBudgetRef.current = reasoningBudget;
     }, [reasoningBudget]);
 
+    useEffect(() => {
+        setRenderWindow(120);
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (chunkFlushRafRef.current != null) {
+                window.cancelAnimationFrame(chunkFlushRafRef.current);
+                chunkFlushRafRef.current = null;
+            }
+            pendingChunksRef.current = [];
+        };
+    }, []);
+
     const handleClose = () => {
         if (ipcRenderer) ipcRenderer.send('close-chat');
     };
 
     const handleSend = useCallback(async (e: React.FormEvent) => {
         e.preventDefault();
-        if ((!input.trim() && !attachedFile) || !wsRef.current) return;
-        // Закрываем возможный незавершённый стрим от прошлого запроса
+        if ((!input.trim() && !attachedFile) || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        ignoreLateChunksRef.current = false;
+        pendingChunksRef.current = [];
+        if (chunkFlushRafRef.current != null) {
+            window.cancelAnimationFrame(chunkFlushRafRef.current);
+            chunkFlushRafRef.current = null;
+        }
+        // Р—Р°РєСЂС‹РІР°РµРј РІРѕР·РјРѕР¶РЅС‹Р№ РЅРµР·Р°РІРµСЂС€С‘РЅРЅС‹Р№ СЃС‚СЂРёРј РѕС‚ РїСЂРѕС€Р»РѕРіРѕ Р·Р°РїСЂРѕСЃР°
         setMessages(prev => prev.map(msg => (msg.streaming ? { ...msg, streaming: false } : msg)));
 
         let fullText = input.trim();
         let fileContextStr = '';
 
-        // Оптимистичное отображение сообщения
+        // РћРїС‚РёРјРёСЃС‚РёС‡РЅРѕРµ РѕС‚РѕР±СЂР°Р¶РµРЅРёРµ СЃРѕРѕР±С‰РµРЅРёСЏ
         const userMsg: Message = { role: 'user', text: fullText };
         if (attachedFile) userMsg.file = attachedFile.name;
         setMessages(prev => [...prev, userMsg]);
         pendingUserMsgs.current.add(fullText || (attachedFile ? attachedFile.name : ''));
 
-        // Если есть файл — загружаем и извлекаем текст
+        // Р•СЃР»Рё РµСЃС‚СЊ С„Р°Р№Р» вЂ” Р·Р°РіСЂСѓР¶Р°РµРј Рё РёР·РІР»РµРєР°РµРј С‚РµРєСЃС‚
         if (attachedFile) {
             setIsUploading(true);
             try {
@@ -1047,7 +1332,8 @@ function ChatView() {
             type: 'command',
             text: fullText,
             file_name: attachedFile ? attachedFile.name : null,
-            file_context: fileContextStr
+            file_context: fileContextStr,
+            task_id: `ui-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
         };
 
         wsRef.current.send(JSON.stringify(payload));
@@ -1098,7 +1384,7 @@ function ChatView() {
                 <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
             </AnimatePresence>
 
-            {/* Шапка (Drag Region) */}
+            {/* РЁР°РїРєР° (Drag Region) */}
             <div className={`flex items-center justify-between px-4 py-3 border-b drag-region transition-colors ${isLightMode ? 'bg-[#ffffff]/50 border-gray-200/50' : 'bg-white/5 border-white/10'
                 }`}>
                 <div className="flex items-center gap-2">
@@ -1143,7 +1429,7 @@ function ChatView() {
                 </div>
             </div>
 
-            {/* Сообщения */}
+            {/* РЎРѕРѕР±С‰РµРЅРёСЏ */}
             <div className="flex-1 overflow-y-auto p-4 space-y-6 no-drag-region">
                 {messages.length === 0 && (
                     <div className={`h-full flex items-center justify-center text-sm ${isLightMode ? 'text-gray-400' : 'opacity-30'}`}>
@@ -1151,86 +1437,41 @@ function ChatView() {
                     </div>
                 )}
 
-                <AnimatePresence>
-                    {messages.map((msg, idx) => (
-                        <motion.div
-                            key={idx}
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                {messages.length > visibleMessages.length && (
+                    <div className="flex justify-center">
+                        <button
+                            onClick={() => setRenderWindow(prev => Math.min(messages.length, prev + 120))}
+                            className={`text-[12px] px-3 py-1 rounded-md border ${isLightMode
+                                ? 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
+                                : 'bg-white/5 border-white/15 text-white/70 hover:bg-white/10'
+                                }`}
                         >
-                            <div
-                                className={`max-w-[85%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed relative select-text cursor-text ${msg.role === 'user'
-                                    ? (isLightMode ? 'bg-[#1d4ed8] text-white font-medium shadow-sm' : 'bg-white/10 text-white font-medium border border-white/10')
-                                    : msg.role === 'system'
-                                        ? (isLightMode ? 'bg-black/5 text-gray-500 text-sm border border-gray-200 indent-0 italic' : 'bg-white/5 text-white/50 text-sm border border-white/5 italic')
-                                        : (isLightMode ? 'bg-[#ffffff] text-gray-800 border border-gray-200 shadow-sm' : 'bg-white/5 text-gray-200 border border-white/10')
-                                    }`}
+                            Показать ещё ({messages.length - visibleMessages.length})
+                        </button>
+                    </div>
+                )}
+
+                <AnimatePresence initial={false}>
+                    {visibleMessages.map((msg, idx) => {
+                        const absoluteIdx = messages.length - visibleMessages.length + idx;
+                        return (
+                            <motion.div
+                                key={`${absoluteIdx}-${msg.role}`}
+                                initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ duration: reduceMotion ? 0.12 : 0.2 }}
+                                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                             >
-                                {msg.role === 'user' || msg.role === 'system' ? (
-                                    <>
-                                        {msg.text && <div>{msg.text}</div>}
-                                        {msg.file && (
-                                            <div className={`flex items-center gap-2 mt-2 px-3 py-2 rounded-lg text-[13px] ${isLightMode
-                                                ? 'bg-blue-700/20 text-white/90'
-                                                : 'bg-black/10 text-black/70'
-                                                }`}>
-                                                <FileText size={16} className="flex-shrink-0" />
-                                                <span className="truncate">{msg.file}</span>
-                                            </div>
-                                        )}
-                                    </>
-                                ) : (() => {
-                                    const { cleanText, sources, docPath } = parseMessage(msg.text);
-                                    return (
-                                        <>
-                                            {msg.thoughts && <ThinkingBlock thoughts={msg.thoughts} isLightMode={isLightMode} />}
-                                            <AssistantMessageText text={cleanText} isLightMode={isLightMode} />
-                                            {sources.length > 0 && (
-                                                <div className={`flex flex-wrap gap-1.5 mt-3 pt-2 border-t ${isLightMode ? 'border-gray-200' : 'border-white/5'}`}>
-                                                    {sources.map((url, i) => (
-                                                        <button
-                                                            key={i}
-                                                            onClick={() => shell?.openExternal(url)}
-                                                            className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] border rounded-lg transition-all cursor-pointer ${isLightMode
-                                                                ? 'bg-black/5 hover:bg-black/10 border-gray-200 text-gray-600 hover:text-gray-900'
-                                                                : 'bg-white/10 hover:bg-white/20 border-white/10 text-white/60 hover:text-white/90'
-                                                                }`}
-                                                            title={url}
-                                                        >
-                                                            <ExternalLink size={10} />
-                                                            {getDomain(url)}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            {docPath && (
-                                                <div className={`flex flex-wrap gap-1.5 mt-2 pt-2 border-t ${isLightMode ? 'border-gray-200' : 'border-white/5'}`}>
-                                                    <button
-                                                        onClick={() => shell?.showItemInFolder(docPath)}
-                                                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] border rounded-lg transition-all cursor-pointer font-medium ${isLightMode
-                                                            ? 'bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-700 hover:text-blue-800'
-                                                            : 'bg-blue-500/20 hover:bg-blue-500/30 border-blue-500/30 text-blue-200 hover:text-white'
-                                                            }`}
-                                                        title={docPath}
-                                                    >
-                                                        <FolderOpen size={12} />
-                                                        Открыть папку с файлом
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </>
-                                    );
-                                })()}
-                            </div>
-                        </motion.div>
-                    ))}
+                                <MessageBubble msg={msg} isLightMode={isLightMode} />
+                            </motion.div>
+                        );
+                    })}
                     {status === 'thinking' && (
-                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                        <motion.div initial={reduceMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
                             <div className={`px-4 py-3 text-sm italic flex items-center gap-2 ${isLightMode ? 'text-gray-500' : 'text-white/40'}`}>
-                                <div className={`w-1 h-1 rounded-full animate-bounce ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} />
-                                <div className={`w-1 h-1 rounded-full animate-bounce ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} style={{ animationDelay: '0.2s' }} />
-                                <div className={`w-1 h-1 rounded-full animate-bounce ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} style={{ animationDelay: '0.4s' }} />
+                                <div className={`w-1 h-1 rounded-full ${reduceMotion ? '' : 'animate-bounce'} ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} />
+                                <div className={`w-1 h-1 rounded-full ${reduceMotion ? '' : 'animate-bounce'} ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} style={{ animationDelay: '0.2s' }} />
+                                <div className={`w-1 h-1 rounded-full ${reduceMotion ? '' : 'animate-bounce'} ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} style={{ animationDelay: '0.4s' }} />
                             </div>
                         </motion.div>
                     )}
@@ -1238,9 +1479,9 @@ function ChatView() {
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* Панель ввода */}
+            {/* РџР°РЅРµР»СЊ РІРІРѕРґР° */}
             <div className={`p-4 ${isLightMode ? 'bg-[#ffffff]/50 border-t border-gray-200/50' : 'bg-transparent'}`}>
-                {/* Чип прикреплённого файла */}
+                {/* Р§РёРї РїСЂРёРєСЂРµРїР»С‘РЅРЅРѕРіРѕ С„Р°Р№Р»Р° */}
                 {attachedFile && (
                     <div className="flex items-center gap-2 mb-2 max-w-3xl mx-auto">
                         <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium ${isLightMode
@@ -1304,7 +1545,7 @@ function ChatView() {
                             ? (thinkingEnabled ? 'text-blue-600 hover:text-blue-700' : 'text-gray-400 hover:text-gray-600')
                             : (thinkingEnabled ? 'text-cyan-300 hover:text-cyan-200' : 'opacity-50 hover:opacity-80')
                             }`}
-                        title={thinkingEnabled ? "Мышление включено" : "Мышление выключено"}
+                        title={thinkingEnabled ? "Режим размышления включен" : "Режим размышления выключен"}
                     >
                         <Brain size={18} />
                     </button>
@@ -1312,7 +1553,7 @@ function ChatView() {
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder={attachedFile ? "Задайте вопрос по файлу..." : "Спроси или попроси о чём-либо..."}
+                        placeholder={attachedFile ? "Задайте вопрос по файлу..." : "Спросите или попросите о чем-либо..."}
                         className={`flex-1 bg-transparent border-none py-3.5 px-2 text-[15px] focus:outline-none focus:ring-0 ${isLightMode
                             ? 'text-gray-900 placeholder:text-gray-400'
                             : 'text-white placeholder:text-white/30'
@@ -1339,3 +1580,4 @@ function ChatView() {
         </div>
     );
 }
+
