@@ -85,7 +85,7 @@ Vera — локальный голосовой агент для Windows, раб
 
 ### Шаг 1: Клонирование
 ```bash
-git clone https://github.com/tripleguard/agent_vera.git
+git clone https://github.com/tripleguard/Vera.git
 cd agent_vera
 ```
 
