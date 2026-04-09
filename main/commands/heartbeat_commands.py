@@ -6,7 +6,7 @@ from dataclasses import dataclass, asdict
 from user.json_storage import load_json, save_json
 from main.lang_ru import replace_number_words
 from main.config_manager import get_data_dir
-from .scheduler_base import SchedulerBase, TIME_FORMAT, now_str
+from .scheduler_base import SchedulerBase, TIME_FORMAT, now_str, parse_time_str
 import os
 
 _HEARTBEAT_FILE = get_data_dir() / "heartbeat_tasks.json"
@@ -87,7 +87,7 @@ def _was_run_today(task: HeartbeatTask) -> bool:
     if not task.last_run:
         return False
     try:
-        last = datetime.datetime.strptime(task.last_run, TIME_FORMAT)
+        last = parse_time_str(task.last_run)
         return last.date() == datetime.datetime.now().date()
     except Exception:
         return False
@@ -127,7 +127,7 @@ class _HeartbeatScheduler(SchedulerBase):
                 # Интервальные задачи: проверяем сколько минут прошло с last_run или created_at
                 last_time_str = task.last_run if task.last_run else task.created_at
                 try:
-                    last_time = datetime.datetime.strptime(last_time_str, TIME_FORMAT)
+                    last_time = parse_time_str(last_time_str)
                 except Exception:
                     last_time = now
                 

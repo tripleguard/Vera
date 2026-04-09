@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Node / npm
+node_modules/
+npm-debug.log*
+
+# LLM / llama binaries
+*.gguf
+llama-server.exe
+llama.dll
+ggml*.dll
+ggml.dll
+mtmd.dll
+libomp*.dll
+download_llama_server.py
+
+# Sherpa-ONNX models
+sherpa-onnx-*/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Misc
+*.log

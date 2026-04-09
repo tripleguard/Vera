@@ -61,6 +61,10 @@ from .recyclebin_commands import (
     execute_recyclebin_command,
 )
 
+from .sound_media import (
+    execute_sound_media_command,
+)
+
 
 # set_last_search_urls_ref экспортируется из web_commands
 # set_speak_callback экспортируется из time_commands
@@ -96,6 +100,7 @@ HANDLERS = (
     execute_app_command,
     
     # Система
+    execute_sound_media_command,
     execute_start_menu_command,
     execute_explorer_command,
     execute_taskmanager_command,

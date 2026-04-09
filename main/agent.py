@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import re
 import queue
@@ -6,7 +6,7 @@ import threading
 import sys
 import time
 from array import array
-from typing import Optional
+from typing import Any, Callable, Dict, Optional
 import difflib
 import sounddevice as sd
 import sherpa_onnx
@@ -30,6 +30,9 @@ from .tool_definitions import TOOL_DEFINITIONS
 from .tools.presentation_generator import is_presentation_request, execute_presentation_creation
 from .tools.document_generator import create_pptx
 from .prompt_builder import build_system_prompt, reload_prompt, get_prompt_status
+from .safety import ActionPolicyEngine, RiskTier
+from .audit import get_audit_logger
+from .plugins import PluginManager
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -44,6 +47,25 @@ def _send_ws(msg: dict):
 _mic_muted = False
 _mic_muted_lock = threading.Lock()  # Lock для thread-safe доступа к _mic_muted
 _shutdown_event = threading.Event()  # Event для graceful shutdown
+
+_task_seq_lock = threading.Lock()
+_task_seq = 0
+_MAX_TOOL_LOOP_DEPTH = 4
+_PER_TOOL_TIMEOUT_SEC = 20.0
+
+
+def _next_task_id() -> str:
+    global _task_seq
+    with _task_seq_lock:
+        _task_seq += 1
+        return f"task-{_task_seq}"
+
+
+def _emit_task_status(task_id: str, state: str, extra: Optional[Dict[str, Any]] = None):
+    payload: Dict[str, Any] = {"type": "task_status", "task_id": task_id, "state": state}
+    if extra:
+        payload.update(extra)
+    _send_ws(payload)
 
 # ── Telegram-режим ──
 _telegram_mode = None  # Экземпляр TelegramMode (или None)
@@ -225,6 +247,11 @@ def _safe_shutdown():
         _llm_server.stop()
     except Exception as e:
         print(f"[SAVE] Ошибка остановки LLM-сервера: {e}")
+
+    try:
+        plugin_manager.shutdown()
+    except Exception as e:
+        print(f"[SAVE] Ошибка остановки plugin manager: {e}")
     
     # Сохраняем все данные пользователя (безопасный доступ через globals)
     print("Сохранение данных...")
@@ -246,6 +273,67 @@ def _safe_shutdown():
     print("Данные сохранены. До свидания!")
     # Не вызываем sys.exit() сразу - даем главному циклу завершиться
     # sys.exit(0) будет вызван из главного цикла
+
+
+def queue_command(
+    text: str,
+    source: str,
+    file_name: Optional[str] = None,
+    file_context: Optional[str] = None,
+    bypass_confirmation: bool = False,
+    task_id: Optional[str] = None,
+):
+    task_id = task_id or _next_task_id()
+    payload = {
+        "task_id": task_id,
+        "text": text,
+        "source": source,
+        "file_name": file_name,
+        "file_context": file_context,
+        "bypass_confirmation": bool(bypass_confirmation),
+    }
+    _command_queue.put(payload)
+    _emit_task_status(task_id, "queued", {"source": source})
+    audit_logger.write_event(
+        "task.queued",
+        {"task_id": task_id, "source": source, "text": text, "bypass_confirmation": bool(bypass_confirmation)},
+    )
+    return task_id
+
+
+def list_plugins_state() -> list[dict]:
+    items: list[dict] = []
+    for record in plugin_manager.list_plugins():
+        items.append(
+            {
+                "plugin_id": record.plugin_id,
+                "name": record.name,
+                "version": record.version,
+                "trust_level": record.trust_level,
+                "enabled": record.enabled,
+                "capabilities": record.capabilities,
+                "permissions": record.permissions,
+                "runtime_profile": record.runtime_profile,
+            }
+        )
+    return items
+
+
+def set_plugin_enabled(plugin_id: str, enabled: bool) -> bool:
+    if enabled:
+        ok = plugin_manager.enable_plugin(plugin_id)
+    else:
+        ok = plugin_manager.disable_plugin(plugin_id)
+    if ok:
+        audit_logger.write_event("plugin.toggled", {"plugin_id": plugin_id, "enabled": enabled})
+    return ok
+
+
+def uninstall_plugin(plugin_id: str) -> bool:
+    ok = plugin_manager.uninstall_plugin(plugin_id)
+    if ok:
+        audit_logger.write_event("plugin.uninstalled_via_api", {"plugin_id": plugin_id})
+    return ok
 
 def execute_slash_command(text: str) -> str:
     """Единый обработчик слеш-команд для консоли и GUI."""
@@ -650,6 +738,11 @@ start_scheduler()
 DATA_DIR = get_data_dir()
 DATA_DIR.mkdir(exist_ok=True)
 
+audit_logger = get_audit_logger(DATA_DIR / "audit" / "actions.jsonl")
+policy_engine = ActionPolicyEngine.from_config(cfg)
+plugin_manager = PluginManager(DATA_DIR, cfg, _send_ws, audit_logger)
+plugin_manager.start()
+
 memory_manager = MemoryManager(DATA_DIR / "MEMORY.md")
 
 print(f"[INFO] Модули задач и памяти инициализированы.")
@@ -732,9 +825,15 @@ HANDLERS_WITH_MANAGERS = (
     execute_memory_command,
 )
 
-def _handle_user_command(text: str, file_name: str = None, file_context: str = None, source: str = 'chat') -> str:
+def _handle_user_command(
+    text: str,
+    file_name: str = None,
+    file_context: str = None,
+    source: str = 'chat',
+    task_id: Optional[str] = None,
+    bypass_confirmation: bool = False,
+) -> str:
     """Обрабатывает команду, логирует в память, извлекает факты, возвращает ответ."""
-
     # Формируем полный текст для LLM (но в историю пойдёт чистый text + file_name)
     full_prompt = text
     if file_name and file_context:
@@ -743,7 +842,14 @@ def _handle_user_command(text: str, file_name: str = None, file_context: str = N
             full_prompt += f'\n---\nВопрос пользователя: {text}'
 
     try:
-        response = route_command(full_prompt, source=source)
+        response = route_command(
+            full_prompt,
+            source=source,
+            task_id=task_id,
+            file_name=file_name,
+            file_context=file_context,
+            bypass_confirmation=bypass_confirmation,
+        )
     except Exception as e:
         response = f"Ошибка обработки запроса: {e}"
     
@@ -782,8 +888,8 @@ def _handle_user_command(text: str, file_name: str = None, file_context: str = N
 
 
 # Очередь для асинхронной обработки команд (голосовых и текстовых из чата)
-# Элемент: (text, source) где source = 'voice' | 'chat'
-_command_queue: "queue.Queue[tuple]" = queue.Queue()
+# Новый формат элемента: dict с полями text/source/task_id/file_name/file_context/bypass_confirmation
+_command_queue: "queue.Queue[dict]" = queue.Queue()
 
 def _command_worker():
     """Поток обработки команд (голос и чат), чтобы LLM не блокировал аудиоцикл."""
@@ -792,9 +898,19 @@ def _command_worker():
             item = _command_queue.get(timeout=0.5)
         except queue.Empty:
             continue
-        
+
+        task_id = _next_task_id()
+        bypass_confirmation = False
+
         # Поддержка разных форматов для обратной совместимости
-        if isinstance(item, tuple):
+        if isinstance(item, dict):
+            cmd = str(item.get("text") or "")
+            source = str(item.get("source") or "voice")
+            file_name = item.get("file_name")
+            file_context = item.get("file_context")
+            task_id = str(item.get("task_id") or task_id)
+            bypass_confirmation = bool(item.get("bypass_confirmation", False))
+        elif isinstance(item, tuple):
             if len(item) == 4:
                 cmd, source, file_name, file_context = item
             elif len(item) == 2:
@@ -806,33 +922,182 @@ def _command_worker():
         else:
             cmd, source = item, 'voice'
             file_name, file_context = None, None
-            
+
+        _emit_task_status(task_id, "running", {"source": source})
         _send_ws({"type": "state", "value": "thinking"})
-        
-        response = _handle_user_command(cmd, file_name, file_context, source=source)
-        
+
+        if is_timer_ringing():
+            target_cmd = cmd.strip().lower()
+            if _is_activation(target_cmd) or target_cmd in ("стоп", "хватит", "отключи", "выключи", "удали таймер", "выключи таймер", "отключи таймер"):
+                stop_timer_ring()
+                _send_ws({"type": "text", "value": "Таймер отключён."})
+                _emit_task_status(task_id, "completed")
+                _send_ws({"type": "state", "value": "idle"})
+                continue
+
         try:
-            print(f"[Вера] {response}")
-        except UnicodeEncodeError:
+            response = _handle_user_command(
+                cmd,
+                file_name,
+                file_context,
+                source=source,
+                task_id=task_id,
+                bypass_confirmation=bypass_confirmation,
+            )
             try:
-                print(f"[Вера] {response.encode('cp1251', errors='replace').decode('cp1251')}")
-            except Exception:
-                print("[Вера] (Нечитаемый ответ из-за кодировки консоли)")
-        
-        # Озвучиваем только голосовые команды
-        if source == 'voice':
-            speak(response)
-        else:
-            _send_ws({"type": "state", "value": "listening"})
+                print(f"[Вера] {response}")
+            except UnicodeEncodeError:
+                try:
+                    print(f"[Вера] {response.encode('cp1251', errors='replace').decode('cp1251')}")
+                except Exception:
+                    print("[Вера] (Нечитаемый ответ из-за кодировки консоли)")
+
+            _emit_task_status(task_id, "completed", {})
+            audit_logger.write_event(
+                "task.completed",
+                {"task_id": task_id, "source": source, "response": str(response)[:300]},
+            )
+
+            # Озвучиваем только голосовые команды
+            if source == 'voice':
+                speak(response)
+            else:
+                _send_ws({"type": "state", "value": "listening"})
+        except Exception as e:
+            _emit_task_status(task_id, "failed", {"reason": str(e)})
+            audit_logger.write_event("task.failed", {"task_id": task_id, "source": source, "error": str(e)})
+            _send_ws({"type": "chat", "role": "system", "text": f"Ошибка выполнения задачи: {e}"})
 
 
 # Маршрутизация команд (атомарная, без планирования)
 
-def route_command_simple(text: str, source: str = 'chat') -> str:
+def _apply_command_policy(
+    text: str,
+    source: str,
+    task_id: Optional[str],
+    file_name: Optional[str],
+    file_context: Optional[str],
+    bypass_confirmation: bool,
+    is_background: bool = False,
+) -> Optional[str]:
+    decision = policy_engine.evaluate_command(text, source=source, is_background=is_background)
+    if task_id:
+        _send_ws(
+            {
+                "type": "action_explain",
+                "task_id": task_id,
+                "action_key": decision.action_key,
+                "risk": decision.risk.label(),
+                "explain": decision.explain,
+            }
+        )
+    audit_logger.write_event(
+        "action.evaluated",
+        {
+            "task_id": task_id,
+            "source": source,
+            "action_key": decision.action_key,
+            "risk": decision.risk.label(),
+            "allowed": decision.allowed,
+            "require_confirm": decision.require_confirm,
+        },
+    )
+
+    if not decision.allowed:
+        return f"Действие заблокировано политикой безопасности: {decision.denied_reason}"
+
+    return None
+
+
+def _try_direct_plugin_shortcut(
+    text: str,
+    source: str,
+    task_id: Optional[str],
+    is_background: bool,
+) -> Optional[str]:
+    lowered = (text or "").strip().lower()
+
+    # Fast path: duplicate scan in Downloads.
+    if ("дубликат" in lowered or "duplicate" in lowered) and plugin_manager.is_plugin_tool("find_file_duplicates_by_hash"):
+        args: Dict[str, Any] = {"recursive": True, "min_size_kb": 1, "max_groups": 12}
+        if "загруз" in lowered or "download" in lowered:
+            args["root_path"] = os.path.join(os.path.expanduser("~"), "Downloads")
+
+        decision = policy_engine.evaluate_tool(
+            tool_name="plugin__find_file_duplicates_by_hash",
+            args=args,
+            source=source,
+            is_background=is_background,
+        )
+        if not decision.allowed:
+            return f"Действие заблокировано политикой безопасности: {decision.denied_reason}"
+
+        _send_ws({"type": "tool_call", "name": "find_file_duplicates_by_hash", "args": args, "kind": "plugin"})
+        result = plugin_manager.invoke_tool("find_file_duplicates_by_hash", args, timeout_sec=_PER_TOOL_TIMEOUT_SEC)
+        if not result.get("ok"):
+            return f"Не удалось выполнить плагин поиска дубликатов: {result.get('error') or 'plugin_call_failed'}"
+
+        payload = result.get("result")
+        if not isinstance(payload, dict):
+            return f"Поиск дубликатов выполнен: {payload}"
+
+        if not payload.get("ok", True):
+            return f"Поиск дубликатов завершился ошибкой: {payload.get('error') or 'unknown_error'}"
+
+        folder = str(payload.get("folder") or "указанная папка")
+        groups = payload.get("groups") or []
+        if not isinstance(groups, list) or not groups:
+            return f"Готово. В папке {folder} дубликаты не найдены."
+
+        lines = [
+            f"Готово. Нашла {len(groups)} групп дубликатов в {folder}.",
+            f"Лишних копий: {payload.get('duplicate_files_without_original', 0)}.",
+        ]
+        for idx, group in enumerate(groups[:5], start=1):
+            files = group.get("files") or []
+            if not isinstance(files, list) or len(files) < 2:
+                continue
+            base = os.path.basename(str(files[0]))
+            lines.append(f"{idx}. {base} — копий: {len(files)}")
+        return "\n".join(lines)
+
+    return None
+
+
+def route_command_simple(
+    text: str,
+    source: str = 'chat',
+    task_id: Optional[str] = None,
+    file_name: Optional[str] = None,
+    file_context: Optional[str] = None,
+    bypass_confirmation: bool = False,
+    is_background: bool = False,
+) -> str:
     """Р’С‹РїРѕР»РЅСЏРµС‚ РѕРґРЅСѓ Р°С‚РѕРР°СЂРЅСѓСЋ РєРѕРР°РЅРґСѓ Р±РµР· РїР»Р°РЅРёСЂРѕРІР°РЅРёСЏ."""
     if _is_simple_greeting(text):
         return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
     
+    policy_message = _apply_command_policy(
+        text=text,
+        source=source,
+        task_id=task_id,
+        file_name=file_name,
+        file_context=file_context,
+        bypass_confirmation=bypass_confirmation,
+        is_background=is_background,
+    )
+    if policy_message:
+        return policy_message
+
+    shortcut_response = _try_direct_plugin_shortcut(
+        text=text,
+        source=source,
+        task_id=task_id,
+        is_background=is_background,
+    )
+    if shortcut_response:
+        return shortcut_response
+
     # Хардкодный обработчик для Telegram авторизации с номером (чтобы не терялся phone)
     tg_auth_match = re.search(r"(?:авторизуй|подключи)\s+(?:телеграм|телогу|телеге)\s+(?:по\s+номеру\s+)?([\+\d\s\-\(\)]+)", text, re.IGNORECASE)
     if tg_auth_match:
@@ -888,7 +1153,7 @@ def route_command_simple(text: str, source: str = 'chat') -> str:
         if res is not None:
             return res
     
-    return ask_llm(text, source=source)
+    return ask_llm(text, source=source, task_id=task_id, bypass_confirmation=bypass_confirmation, is_background=is_background)
 
 
 def _web_search_for_presentation(query: str) -> str:
@@ -904,7 +1169,14 @@ def _web_search_for_presentation(query: str) -> str:
 
 
 
-def route_command(text: str, source: str = 'chat') -> str:
+def route_command(
+    text: str,
+    source: str = 'chat',
+    task_id: Optional[str] = None,
+    file_name: Optional[str] = None,
+    file_context: Optional[str] = None,
+    bypass_confirmation: bool = False,
+) -> str:
     """\u0413\u043b\u0430\u0432\u043d\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043a\u043e\u043c\u0430\u043d\u0434 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0449\u0438\u043a\u0430."""
     lowered = text.lower().strip()
     if any(t in lowered for t in _TELEGRAM_TRIGGERS):
@@ -921,10 +1193,30 @@ def route_command(text: str, source: str = 'chat') -> str:
         )
         return msg
 
-    return route_command_simple(text, source=source)
+    return route_command_simple(
+        text,
+        source=source,
+        task_id=task_id,
+        file_name=file_name,
+        file_context=file_context,
+        bypass_confirmation=bypass_confirmation,
+    )
 
 def route_heartbeat_task(text: str) -> str:
     """Специальный маршрутизатор для фоновых задач, который НЕ вызывает LLM для простых напоминаний."""
+    background_task_id = _next_task_id()
+    policy_message = _apply_command_policy(
+        text=text,
+        source="heartbeat",
+        task_id=background_task_id,
+        file_name=None,
+        file_context=None,
+        bypass_confirmation=False,
+        is_background=True,
+    )
+    if policy_message:
+        return policy_message
+
     # Хардкодный обработчик Telegram
     tg_auth_match = re.search(r"(?:авторизуй|подключи)\s+(?:телеграм|телогу|телеге)\s+(?:по\s+номеру\s+)?([\+\d\s\-\(\)]+)", text, re.IGNORECASE)
     if tg_auth_match:
@@ -956,7 +1248,7 @@ def route_heartbeat_task(text: str) -> str:
     # Проверяем, не является ли это поисковым запросом ("прочитай новости", "какая погода", "кто такой")
     # Если да, перенаправляем в LLM, где он сможет использовать инструменты
     if _should_use_web_search(text):
-        return ask_llm(text)
+        return ask_llm(text, source="heartbeat", task_id=background_task_id, is_background=True)
 
     # Если ни один системный инструмент не отреагировал, считаем это простым текстовым напоминанием.
     # LLM не вызываем, просто возвращаем сам текст (Heartbeat скажет "Напоминание по задаче: {text}").
@@ -1048,7 +1340,15 @@ def _is_plain_code_request(user_text: str) -> bool:
     return code_intent and not file_intent and not run_intent
 
 
-def ask_llm(user_text: str, source: str = 'chat', allow_tools: bool = True) -> str:
+def ask_llm(
+    user_text: str,
+    source: str = 'chat',
+    allow_tools: bool = True,
+    task_id: Optional[str] = None,
+    bypass_confirmation: bool = False,
+    is_background: bool = False,
+    _tool_loop_depth: int = 0,
+) -> str:
     if _is_simple_greeting(user_text):
         return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
 
@@ -1096,7 +1396,12 @@ def ask_llm(user_text: str, source: str = 'chat', allow_tools: bool = True) -> s
 
     effective_allow_tools = allow_tools and not _is_plain_code_request(user_text)
     if effective_allow_tools:
-        gen_args["tools"] = TOOL_DEFINITIONS
+        plugin_tool_defs = []
+        try:
+            plugin_tool_defs = plugin_manager.get_tool_definitions()
+        except Exception:
+            plugin_tool_defs = []
+        gen_args["tools"] = TOOL_DEFINITIONS + plugin_tool_defs
         gen_args["tool_choice"] = "auto"
 
     use_stream = (source == 'chat')
@@ -1208,7 +1513,15 @@ def ask_llm(user_text: str, source: str = 'chat', allow_tools: bool = True) -> s
                 if (streamed_tool_calls[i].get("function", {}) or {}).get("name")
             ]
             if ordered_tool_calls:
-                return _handle_tool_calls(ordered_tool_calls, user_text)
+                return _handle_tool_calls(
+                    ordered_tool_calls,
+                    user_text=user_text,
+                    source=source,
+                    task_id=task_id,
+                    bypass_confirmation=bypass_confirmation,
+                    is_background=is_background,
+                    tool_loop_depth=_tool_loop_depth,
+                )
 
         final_reply = full_response.strip()
         if final_reply:
@@ -1220,7 +1533,15 @@ def ask_llm(user_text: str, source: str = 'chat', allow_tools: bool = True) -> s
     message = result.get("choices", [{}])[0].get("message", {})
     tool_calls = message.get("tool_calls")
     if tool_calls:
-        return _handle_tool_calls(tool_calls, user_text)
+        return _handle_tool_calls(
+            tool_calls,
+            user_text=user_text,
+            source=source,
+            task_id=task_id,
+            bypass_confirmation=bypass_confirmation,
+            is_background=is_background,
+            tool_loop_depth=_tool_loop_depth,
+        )
 
     reasoning_reply = (message.get("reasoning_content") or "").strip()
     if thinking_enabled and reasoning_reply:
@@ -1252,44 +1573,246 @@ def ask_llm(user_text: str, source: str = 'chat', allow_tools: bool = True) -> s
     return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0439 \u043e\u0442\u0432\u0435\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438."
 
 
-def _handle_tool_calls(tool_calls: list, user_text: str) -> str:
-    """\u041e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442 \u0432\u044b\u0437\u043e\u0432 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0430, \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0435\u043d\u043d\u044b\u0439 \u043c\u043e\u0434\u0435\u043b\u044c\u044e."""
-    tc = tool_calls[0] if tool_calls else {}
-    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-    tool_name = fn.get("name", "")
+def _run_callable_with_timeout(fn: Callable[[], Any], timeout_sec: float) -> tuple[bool, Any, str]:
+    holder: dict[str, Any] = {}
+    done = threading.Event()
 
-    try:
-        args = json.loads(fn.get("arguments", "{}"))
-        if not isinstance(args, dict):
+    def _runner():
+        try:
+            holder["result"] = fn()
+            holder["ok"] = True
+        except Exception as e:
+            holder["ok"] = False
+            holder["error"] = str(e)
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    finished = done.wait(timeout=max(0.5, timeout_sec))
+    if not finished:
+        return False, None, f"timeout after {timeout_sec:.1f}s"
+    if not holder.get("ok", False):
+        return False, None, str(holder.get("error") or "unknown_error")
+    return True, holder.get("result"), ""
+
+
+def _handle_tool_calls(
+    tool_calls: list,
+    user_text: str,
+    source: str,
+    task_id: Optional[str],
+    bypass_confirmation: bool,
+    is_background: bool,
+    tool_loop_depth: int,
+) -> str:
+    """Обрабатывает один или несколько tool calls с bounded loop и policy gating."""
+    if not tool_calls:
+        return "Не удалось выполнить инструмент: список вызовов пуст."
+
+    if tool_loop_depth >= _MAX_TOOL_LOOP_DEPTH:
+        return "Достигнут лимит глубины инструментальных вызовов. Сформулируйте запрос точнее."
+
+    tool_outputs: list[str] = []
+    tool_errors: list[str] = []
+    had_successful_tool = False
+
+    for tc in tool_calls:
+        fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+        tool_name = str(fn.get("name", "")).strip()
+        if not tool_name:
+            continue
+
+        try:
+            raw_args = fn.get("arguments", {})
+            if isinstance(raw_args, str):
+                args = json.loads(raw_args or "{}")
+            elif isinstance(raw_args, dict):
+                args = raw_args
+            else:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+        except Exception:
             args = {}
-    except Exception:
-        args = {}
 
-    if tool_name in {"create_document", "code_interpreter"} and _is_plain_code_request(user_text):
-        return ask_llm(user_text, source='chat', allow_tools=False)
-
-    if tool_name == "web_search":
+        is_plugin_candidate = False
         try:
-            query = str(args.get("query") or user_text).strip()
-            if not query:
-                return "\u041f\u0443\u0441\u0442\u043e\u0439 \u043f\u043e\u0438\u0441\u043a\u043e\u0432\u044b\u0439 \u0437\u0430\u043f\u0440\u043e\u0441."
-            detailed = bool(args.get("detailed", False))
-            return web_search_answer(query, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS, detailed=detailed)
-        except Exception as e:
-            print(f"[WEB_SEARCH] \u041e\u0448\u0438\u0431\u043a\u0430: {e}")
-            return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u0432\u0435\u0431-\u043f\u043e\u0438\u0441\u043a."
+            is_plugin_candidate = plugin_manager.is_plugin_tool(tool_name)
+        except Exception:
+            is_plugin_candidate = False
 
-    if tool_name in TOOLS:
-        try:
-            print(f"[TOOL_CALL] {tool_name}: {args}")
-            _send_ws({"type": "tool_call", "name": tool_name, "args": args})
-            return TOOLS[tool_name](args)
-        except Exception as e:
-            print(f"[TOOL] \u041e\u0448\u0438\u0431\u043a\u0430 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f {tool_name}: {e}")
-            return f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f {tool_name}: {e}"
+        decision = policy_engine.evaluate_tool(
+            tool_name=(f"plugin__{tool_name}" if is_plugin_candidate else tool_name),
+            args=args,
+            source=source,
+            is_background=is_background,
+        )
 
-    print(f"[TOOL] \u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {tool_name}")
-    return "\u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u044b\u0439 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442."
+        _send_ws(
+            {
+                "type": "action_explain",
+                "task_id": task_id,
+                "action_key": decision.action_key,
+                "risk": decision.risk.label(),
+                "explain": decision.explain,
+            }
+        )
+
+        audit_logger.write_event(
+            "tool.evaluated",
+            {
+                "task_id": task_id,
+                "tool_name": tool_name,
+                "risk": decision.risk.label(),
+                "allowed": decision.allowed,
+                "require_confirm": decision.require_confirm,
+                "args": args,
+            },
+        )
+
+        if not decision.allowed:
+            error_line = f"{tool_name}: blocked by policy ({decision.denied_reason})"
+            tool_outputs.append(error_line)
+            tool_errors.append(error_line)
+            continue
+
+        if tool_name in {"create_document", "code_interpreter"} and _is_plain_code_request(user_text):
+            return ask_llm(
+                user_text,
+                source=source,
+                allow_tools=False,
+                task_id=task_id,
+                bypass_confirmation=True,
+                is_background=is_background,
+                _tool_loop_depth=tool_loop_depth + 1,
+            )
+
+        if tool_name == "web_search":
+            try:
+                query = str(args.get("query") or user_text).strip()
+                if not query:
+                    tool_outputs.append("web_search: пустой поисковый запрос")
+                else:
+                    detailed = bool(args.get("detailed", False))
+                    output = web_search_answer(
+                        query,
+                        _WEB_CFG,
+                        get_system_prompt(),
+                        llm,
+                        LAST_SEARCH_URLS,
+                        detailed=detailed,
+                    )
+                    tool_outputs.append(f"web_search: {output}")
+            except Exception as e:
+                print(f"[WEB_SEARCH] Ошибка: {e}")
+                tool_outputs.append(f"web_search: error {e}")
+            continue
+
+        if tool_name in TOOLS:
+            try:
+                print(f"[TOOL_CALL] {tool_name}: {args}")
+                _send_ws({"type": "tool_call", "name": tool_name, "args": args})
+                ok, output, err = _run_callable_with_timeout(
+                    lambda: TOOLS[tool_name](args),
+                    _PER_TOOL_TIMEOUT_SEC,
+                )
+                if not ok:
+                    raise RuntimeError(err)
+                tool_outputs.append(f"{tool_name}: {output}")
+                had_successful_tool = True
+                audit_logger.write_event(
+                    "tool.executed",
+                    {"task_id": task_id, "tool_name": tool_name, "status": "ok"},
+                )
+            except Exception as e:
+                print(f"[TOOL] Ошибка выполнения {tool_name}: {e}")
+                error_line = f"{tool_name}: error {e}"
+                tool_outputs.append(error_line)
+                tool_errors.append(error_line)
+                audit_logger.write_event(
+                    "tool.executed",
+                    {"task_id": task_id, "tool_name": tool_name, "status": "error", "error": str(e)},
+                )
+            continue
+
+        if is_plugin_candidate:
+            try:
+                _send_ws({"type": "tool_call", "name": tool_name, "args": args, "kind": "plugin"})
+                resolved = plugin_manager.resolve_tool(tool_name, user_text=user_text) or {}
+                if task_id:
+                    _send_ws(
+                        {
+                            "type": "action_explain",
+                            "task_id": task_id,
+                            "action_key": f"tool.{tool_name}",
+                            "risk": decision.risk.label(),
+                            "explain": resolved.get("rationale") or f"Выбран plugin tool: {tool_name}",
+                        }
+                    )
+                result = plugin_manager.invoke_tool(tool_name, args, timeout_sec=_PER_TOOL_TIMEOUT_SEC)
+                if result.get("ok"):
+                    rendered_result = json.dumps(result.get("result"), ensure_ascii=False)
+                    tool_outputs.append(f"{tool_name}: {rendered_result}")
+                    had_successful_tool = True
+                    audit_logger.write_event(
+                        "tool.executed",
+                        {
+                            "task_id": task_id,
+                            "tool_name": tool_name,
+                            "status": "ok",
+                            "plugin_id": result.get("plugin_id"),
+                        },
+                    )
+                else:
+                    error_text = str(result.get("error") or "plugin_call_failed")
+                    error_line = f"{tool_name}: error {error_text}"
+                    tool_outputs.append(error_line)
+                    tool_errors.append(error_line)
+                    audit_logger.write_event(
+                        "tool.executed",
+                        {
+                            "task_id": task_id,
+                            "tool_name": tool_name,
+                            "status": "error",
+                            "plugin_id": result.get("plugin_id"),
+                            "error": error_text,
+                        },
+                    )
+            except Exception as e:
+                error_line = f"{tool_name}: error {e}"
+                tool_outputs.append(error_line)
+                tool_errors.append(error_line)
+                audit_logger.write_event(
+                    "tool.executed",
+                    {"task_id": task_id, "tool_name": tool_name, "status": "error", "error": str(e)},
+                )
+            continue
+
+        error_line = f"{tool_name}: unknown tool"
+        tool_outputs.append(error_line)
+        tool_errors.append(error_line)
+
+    if not tool_outputs:
+        return "Модель запросила инструменты, но не указала корректные вызовы."
+    if tool_errors and not had_successful_tool:
+        return "Не удалось выполнить инструмент(ы):\n" + "\n".join(f"- {line}" for line in tool_errors[:5])
+
+    tool_context = "\n".join(f"- {line}" for line in tool_outputs)
+    followup_prompt = (
+        f"{user_text}\n\n"
+        f"Результаты инструментов:\n{tool_context}\n\n"
+        "Сформируй итоговый ответ пользователю на русском и при необходимости продолжи с инструментами."
+    )
+    return ask_llm(
+        followup_prompt,
+        source=source,
+        allow_tools=True,
+        task_id=task_id,
+        bypass_confirmation=bypass_confirmation,
+        is_background=is_background,
+        _tool_loop_depth=tool_loop_depth + 1,
+    )
 
 
 def run_main_loop():
@@ -1371,7 +1894,7 @@ def run_main_loop():
                 user_command = text
                 listening_for_command = False
 
-            _command_queue.put((user_command, 'voice'))
+            queue_command(user_command, source='voice')
     
     # Главный цикл завершен
     sys.exit(0)

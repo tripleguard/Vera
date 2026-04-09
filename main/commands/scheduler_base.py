@@ -12,8 +12,20 @@ import datetime
 from typing import Optional, Callable
 
 
-# Единый формат времени для хранения (человекочитаемый)
-TIME_FORMAT = "%Y-%m-%d-%H-%M"
+# Единый формат времени для хранения (актуальный - с секундами)
+TIME_FORMAT = "%Y-%m-%d-%H-%M-%S"
+LEGACY_TIME_FORMAT = "%Y-%m-%d-%H-%M"
+
+def parse_time_str(ts_str: str) -> datetime.datetime:
+    """Парсит строку времени, поддерживая старый и новый форматы."""
+    try:
+        return datetime.datetime.strptime(ts_str, TIME_FORMAT)
+    except ValueError:
+        try:
+            return datetime.datetime.strptime(ts_str, LEGACY_TIME_FORMAT)
+        except ValueError:
+            return datetime.datetime.now()
+
 
 
 def ts_from_float(ts: float) -> str:
@@ -23,7 +35,7 @@ def ts_from_float(ts: float) -> str:
 
 def ts_to_float(ts_str: str) -> float:
     """Конвертирует строковый формат в unix timestamp."""
-    return datetime.datetime.strptime(ts_str, TIME_FORMAT).timestamp()
+    return parse_time_str(ts_str).timestamp()
 
 
 def now_str() -> str:
