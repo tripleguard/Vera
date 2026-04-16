@@ -1,61 +1,59 @@
 {
-    "name": "vera-ui",
-    "version": "1.0.0",
-    "main": "main.js",
-    "scripts": {
-        "dev": "vite",
-        "build": "npm run build:renderer",
-        "build:renderer": "tsc && vite build",
-        "build:app": "npm run build:renderer && electron-builder --win dir",
-        "electron:start": "node start.js",
-        "start": "concurrently \"npm run dev\" \"wait-on tcp:5173 && npm run electron:start\""
+  "name": "vera",
+  "description": "Vera - voice AI assistant",
+  "author": "TripleGuard",
+  "version": "1.1.0",
+  "main": "main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run build:renderer",
+    "build:renderer": "tsc && vite build",
+    "build:app": "npm run build:renderer && electron-builder --win dir",
+    "electron:start": "node start.js",
+    "start": "concurrently \"npm run dev\" \"wait-on tcp:5173 && npm run electron:start\""
+  },
+  "build": {
+    "appId": "ru.agentvera.desktop",
+    "productName": "Vera",
+    "executableName": "Vera",
+    "asar": true,
+    "directories": {
+      "output": "dist-electron"
     },
-    "build": {
-        "appId": "ru.agentvera.desktop",
-        "productName": "Vera",
-        "asar": true,
-        "directories": {
-            "output": "dist-electron"
-        },
-        "files": [
-            "main.js",
-            "start.js",
-            "dist/**/*",
-            "package.json"
-        ],
-        "extraResources": [
-            {
-                "from": "../build/backend",
-                "to": "backend"
-            }
-        ],
-        "win": {
-            "target": [
-                "dir"
-            ],
-            "icon": "../vera.ico"
-        }
-    },
-    "dependencies": {
-        "framer-motion": "^10.16.4",
-        "lucide-react": "^0.292.0",
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0",
-        "react-markdown": "^10.1.0"
-    },
-    "devDependencies": {
-        "@types/react": "^18.2.15",
-        "@types/react-dom": "^18.2.7",
-        "@vitejs/plugin-react": "^4.0.0",
-        "autoprefixer": "^10.4.27",
-        "concurrently": "^8.2.0",
-        "electron": "^28.0.0",
-        "electron-builder": "^24.13.3",
-        "rcedit": "^4.0.1",
-        "postcss": "^8.5.8",
-        "tailwindcss": "^3.4.19",
-        "typescript": "^5.0.2",
-        "vite": "^4.4.5",
-        "wait-on": "^7.0.1"
+    "files": [
+      "main.js",
+      "start.js",
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "icon": "../vera.ico",
+      "signAndEditExecutable": false
     }
+  },
+  "dependencies": {
+    "framer-motion": "^10.16.4",
+    "lucide-react": "^0.292.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.15",
+    "@types/react-dom": "^18.2.7",
+    "@vitejs/plugin-react": "^4.0.0",
+    "autoprefixer": "^10.4.27",
+    "concurrently": "^8.2.0",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.13.3",
+    "rcedit": "^4.0.1",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.0.2",
+    "vite": "^4.4.5",
+    "wait-on": "^7.0.1"
+  }
 }

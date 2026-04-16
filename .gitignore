@@ -6,15 +6,13 @@ __pycache__/
 venv/
 .venv/
 *.egg-info/
-dist/
-build/
 *.egg
 
 # Node / npm
 node_modules/
 npm-debug.log*
 
-# LLM / llama binaries
+# LLM / llama binaries (runtime, не хранить в репозитории)
 *.gguf
 llama-server.exe
 llama.dll
@@ -22,10 +20,15 @@ ggml*.dll
 ggml.dll
 mtmd.dll
 libomp*.dll
-download_llama_server.py
 
 # Sherpa-ONNX models
 sherpa-onnx-*/
+
+# Build artifacts (PyInstaller / Electron / Inno Setup)
+dist/
+build/
+*.spec.bak
+ui/dist-electron/
 
 # IDE
 .vscode/
@@ -40,3 +43,6 @@ Desktop.ini
 
 # Misc
 *.log
+
+# Setup files
+*Setup*.exe

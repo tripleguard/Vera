@@ -59,14 +59,13 @@ function getDomain(url: string): string {
 
 function ThinkingBlock({ thoughts, isLightMode }: { thoughts: string, isLightMode: boolean }) {
     const [isExpanded, setIsExpanded] = useState(false);
-    
+
     if (!thoughts) return null;
-    
+
     return (
-        <div className={`mb-4 rounded-xl border transition-all ${
-            isLightMode ? 'bg-gray-50 border-gray-200' : 'bg-white/5 border-white/10'
-        }`}>
-            <button 
+        <div className={`mb-4 rounded-xl border transition-all ${isLightMode ? 'bg-gray-50 border-gray-200' : 'bg-white/5 border-white/10'
+            }`}>
+            <button
                 onClick={(e) => {
                     e.stopPropagation();
                     setIsExpanded(!isExpanded);
@@ -210,12 +209,12 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                 fetch('http://127.0.0.1:8000/api/heartbeat-tasks').then(res => res.json()),
                 fetch('http://127.0.0.1:8000/api/plugins').then(res => res.json())
             ])
-            .then(([cfgData, tasksData, pluginsData]) => {
-                setConfig(cfgData);
-                setTasks(Array.isArray(tasksData) ? tasksData : []);
-                setPlugins(Array.isArray(pluginsData) ? pluginsData : []);
-            })
-            .catch(err => setMessage('Ошибка загрузки настроек: ' + err.message));
+                .then(([cfgData, tasksData, pluginsData]) => {
+                    setConfig(cfgData);
+                    setTasks(Array.isArray(tasksData) ? tasksData : []);
+                    setPlugins(Array.isArray(pluginsData) ? pluginsData : []);
+                })
+                .catch(err => setMessage('Ошибка загрузки настроек: ' + err.message));
         }
     }, [isOpen]);
 
@@ -318,7 +317,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
         const now = new Date();
         const pad = (n: number) => n.toString().padStart(2, '0');
         const created_at = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}`;
-        
+
         setTasks(prev => [...prev, {
             task_text: "Новая задача",
             time: "12:00",
@@ -532,7 +531,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                     <div className="pt-2 border-t border-white/5 space-y-4">
                                         <div className="flex items-center justify-between">
                                             <label className="text-sm opacity-80 cursor-pointer flex items-center gap-2">
-                                                <input 
+                                                <input
                                                     type="checkbox"
                                                     checked={config.model?.use_external_server || false}
                                                     onChange={e => handleChange('model', 'use_external_server', e.target.checked, 'boolean')}
@@ -688,9 +687,9 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                                 />
                                                 <div className="flex items-center gap-2">
                                                     <label className="text-sm flex items-center gap-1 cursor-pointer">
-                                                        <input 
-                                                            type="checkbox" 
-                                                            checked={task.enabled} 
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={task.enabled}
                                                             onChange={e => handleTaskChange(idx, 'enabled', e.target.checked)}
                                                             className="rounded bg-black/30 border-white/10"
                                                         />
@@ -717,7 +716,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                                     <option value="weekends">По выходным</option>
                                                     <option value="interval">С интервалом</option>
                                                 </select>
-                                                
+
                                                 {task.recurring !== 'interval' && (
                                                     <input
                                                         type="time"
@@ -726,7 +725,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                                         className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-white/30"
                                                     />
                                                 )}
-                                                
+
                                                 {task.recurring === 'once' && (
                                                     <input
                                                         type="date"
@@ -735,7 +734,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                                         className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-white/30"
                                                     />
                                                 )}
-                                                
+
                                                 {task.recurring === 'interval' && (
                                                     <div className="flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5">
                                                         <input
@@ -993,11 +992,11 @@ const MessageBubble = memo(function MessageBubble({
                                         }`}
                                     title={docPath}
                                 >
-                                                        <FolderOpen size={12} />
-                                                        Открыть папку с файлом
-                                                    </button>
-                                                </div>
-                                            )}
+                                    <FolderOpen size={12} />
+                                    Открыть папку с файлом
+                                </button>
+                            </div>
+                        )}
                     </>
                 );
             })()}
@@ -1394,7 +1393,7 @@ function ChatView() {
                         {!isConnected && <div className="absolute inset-0 w-full h-full rounded-full animate-pulse bg-red-500" />}
                     </div>
                     <span className={`text-sm font-medium tracking-wide select-none flex items-center ${isLightMode ? 'opacity-90' : 'opacity-80'}`}>
-                        Vera AI 
+                        Vera
                         {!isConnected && <span className="text-[11px] font-normal tracking-normal ml-2 text-red-500/90 whitespace-nowrap">(ожидание)</span>}
                     </span>
                 </div>
@@ -1409,15 +1408,15 @@ function ChatView() {
                     >
                         {isLightMode ? <Moon size={16} /> : <Sun size={16} />}
                     </button>
-                    <button 
-                        onClick={() => isConnected && setIsSettingsOpen(true)} 
+                    <button
+                        onClick={() => isConnected && setIsSettingsOpen(true)}
                         disabled={!isConnected}
-                        className={`p-1.5 rounded-md transition-all ${!isConnected 
-                            ? 'opacity-30 cursor-not-allowed text-gray-400' 
+                        className={`p-1.5 rounded-md transition-all ${!isConnected
+                            ? 'opacity-30 cursor-not-allowed text-gray-400'
                             : (isLightMode
                                 ? 'text-gray-600 hover:bg-black/5 hover:text-gray-900'
                                 : 'text-white opacity-50 hover:opacity-100 hover:bg-white/10')
-                        }`}>
+                            }`}>
                         <Settings size={16} />
                     </button>
                     <button onClick={handleClose} className={`p-1 rounded-md transition-all ${isLightMode
@@ -1510,11 +1509,10 @@ function ChatView() {
                     className="hidden"
                 />
 
-                <form onSubmit={handleSend} className={`relative flex items-center w-full max-w-3xl mx-auto rounded-xl border overflow-hidden transition-all ${
-                    !isConnected ? 'opacity-50 pointer-events-none grayscale' : ''
-                } ${isLightMode
-                    ? 'bg-white border-gray-300 focus-within:border-blue-500 focus-within:shadow-[0_0_0_1px_rgba(59,130,246,0.5)]'
-                    : 'bg-white/10 border-white/15 focus-within:border-white/30 focus-within:bg-white/15'
+                <form onSubmit={handleSend} className={`relative flex items-center w-full max-w-3xl mx-auto rounded-xl border overflow-hidden transition-all ${!isConnected ? 'opacity-50 pointer-events-none grayscale' : ''
+                    } ${isLightMode
+                        ? 'bg-white border-gray-300 focus-within:border-blue-500 focus-within:shadow-[0_0_0_1px_rgba(59,130,246,0.5)]'
+                        : 'bg-white/10 border-white/15 focus-within:border-white/30 focus-within:bg-white/15'
                     }`}>
                     <button
                         type="button"
