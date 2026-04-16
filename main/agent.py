@@ -30,7 +30,6 @@ from .tool_definitions import TOOL_DEFINITIONS
 from .tools.presentation_generator import is_presentation_request, execute_presentation_creation
 from .tools.document_generator import create_pptx
 from .prompt_builder import build_system_prompt, reload_prompt, get_prompt_status
-from .safety import ActionPolicyEngine, RiskTier
 from .audit import get_audit_logger
 from .plugins import PluginManager
 
@@ -104,6 +103,50 @@ def _is_simple_greeting(text: str) -> bool:
     if not cleaned:
         return True
     return bool(_GREETING_RE.fullmatch(cleaned))
+
+def _is_small_talk(text: str) -> bool:
+    """Определяет, является ли запрос простой болтовней/руганью, для которой НЕ нужны инструменты."""
+    cleaned = text.lower().strip()
+    # Оставляем только буквы и цифры
+    cleaned = re.sub(r'[^\w\s]', '', cleaned)
+    words = set(cleaned.split())
+    
+    # 1. Если текст пустой или 1-2 слова без командных глаголов:
+    command_keywords = {
+        "найди", "погугли", "поищи", "узнай", "открой", "запусти", "закрой",
+        "напиши", "отправь", "прочитай", "посчитай", "сколько", "создай", "сделай", 
+        "переведи", "скачай", "курс", "погода", "телеграм", "телега", "файл", 
+        "документ", "презентация", "запомни", "сохрани", "удали", "включи", "выключи",
+        "пароль", "сгенерируй", "кто", "что", "когда"
+    }
+    
+    if len(words) <= 3 and not words.intersection(command_keywords):
+        return True
+        
+    # 2. Прямые паттерны болтовни / ругани
+    chat_patterns = [
+        r"^как (твой |твои )?дела",
+        r"^ч[её] (ты )?делаешь",
+        r"^что (ты )?делаешь",
+        r"^(как |какое )(тво[её] )?настроение",
+        r"^расскажи (о себе|сказку|анекдот|историю)",
+        r"^(бля|блять|сука|пздц|еба|хз|заебись|хуй|пиздец)",
+        r"^ты (дура|умная|кто|тупая|классная|супер)",
+        r"^(очень )?круто",
+        r"^(я )?понял",
+        r"^(огромное )?(спасибо|спс|благодарю)",
+        r"^пожалуйста",
+        r"^не за что",
+        r"^(да|нет|ок|окей|хорошо|ладно|ясно|понятно)$",
+        r"^спокойной ночи",
+        r"^доброе утро",
+        r"^привет",
+    ]
+    for p in chat_patterns:
+        if re.search(p, cleaned):
+            return True
+            
+    return False
 
 def _get_telegram_exit_commands():
     """Lazily loads Telegram exit commands from telegram_mode module."""
@@ -492,13 +535,16 @@ def set_thinking_mode(enabled: bool, reasoning_budget: Optional[int] = None) -> 
     _send_ws({"type": "thinking_mode", **state})
     return state
 
-_llm_server = LlamaServer(
-    model_path=_model_cfg.get("path", "auto"),
-    ctx_size=_model_cfg.get("ctx_size", 16384),
-    port=_model_cfg.get("server_port", 29741),
-)
+_llm_server = None
+try:
+    _llm_server = LlamaServer(
+        ctx_size=_model_cfg.get("ctx_size", 16384),
+        port=_model_cfg.get("server_port", 29741),
+    )
+except Exception as e:
+    print(f"[LLM_SERVER] Не удалось инициализировать локальный LLM: {e}")
 
-if not _use_external:
+if _llm_server and not _use_external:
     try:
         _llm_server.start()
         llm = LlamaClient(port=_llm_server.port)
@@ -519,7 +565,10 @@ if not _use_external:
         })
         llm = LlamaClient(base_url=_external_url)
 else:
-    print(f"[LLM_CLIENT] спользование внешнего сервера: {_external_url}")
+    if not _use_external and not _llm_server:
+        print(f"[LLM_CLIENT] Модель не найдена, используется внешний сервер: {_external_url}")
+    else:
+        print(f"[LLM_CLIENT] Использование внешнего сервера: {_external_url}")
     llm = LlamaClient(base_url=_external_url)
 
 
@@ -739,7 +788,6 @@ DATA_DIR = get_data_dir()
 DATA_DIR.mkdir(exist_ok=True)
 
 audit_logger = get_audit_logger(DATA_DIR / "audit" / "actions.jsonl")
-policy_engine = ActionPolicyEngine.from_config(cfg)
 plugin_manager = PluginManager(DATA_DIR, cfg, _send_ws, audit_logger)
 plugin_manager.start()
 
@@ -971,43 +1019,6 @@ def _command_worker():
 
 # Маршрутизация команд (атомарная, без планирования)
 
-def _apply_command_policy(
-    text: str,
-    source: str,
-    task_id: Optional[str],
-    file_name: Optional[str],
-    file_context: Optional[str],
-    bypass_confirmation: bool,
-    is_background: bool = False,
-) -> Optional[str]:
-    decision = policy_engine.evaluate_command(text, source=source, is_background=is_background)
-    if task_id:
-        _send_ws(
-            {
-                "type": "action_explain",
-                "task_id": task_id,
-                "action_key": decision.action_key,
-                "risk": decision.risk.label(),
-                "explain": decision.explain,
-            }
-        )
-    audit_logger.write_event(
-        "action.evaluated",
-        {
-            "task_id": task_id,
-            "source": source,
-            "action_key": decision.action_key,
-            "risk": decision.risk.label(),
-            "allowed": decision.allowed,
-            "require_confirm": decision.require_confirm,
-        },
-    )
-
-    if not decision.allowed:
-        return f"Действие заблокировано политикой безопасности: {decision.denied_reason}"
-
-    return None
-
 
 def _try_direct_plugin_shortcut(
     text: str,
@@ -1022,15 +1033,6 @@ def _try_direct_plugin_shortcut(
         args: Dict[str, Any] = {"recursive": True, "min_size_kb": 1, "max_groups": 12}
         if "загруз" in lowered or "download" in lowered:
             args["root_path"] = os.path.join(os.path.expanduser("~"), "Downloads")
-
-        decision = policy_engine.evaluate_tool(
-            tool_name="plugin__find_file_duplicates_by_hash",
-            args=args,
-            source=source,
-            is_background=is_background,
-        )
-        if not decision.allowed:
-            return f"Действие заблокировано политикой безопасности: {decision.denied_reason}"
 
         _send_ws({"type": "tool_call", "name": "find_file_duplicates_by_hash", "args": args, "kind": "plugin"})
         result = plugin_manager.invoke_tool("find_file_duplicates_by_hash", args, timeout_sec=_PER_TOOL_TIMEOUT_SEC)
@@ -1077,17 +1079,7 @@ def route_command_simple(
     if _is_simple_greeting(text):
         return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
     
-    policy_message = _apply_command_policy(
-        text=text,
-        source=source,
-        task_id=task_id,
-        file_name=file_name,
-        file_context=file_context,
-        bypass_confirmation=bypass_confirmation,
-        is_background=is_background,
-    )
-    if policy_message:
-        return policy_message
+
 
     shortcut_response = _try_direct_plugin_shortcut(
         text=text,
@@ -1205,17 +1197,7 @@ def route_command(
 def route_heartbeat_task(text: str) -> str:
     """Специальный маршрутизатор для фоновых задач, который НЕ вызывает LLM для простых напоминаний."""
     background_task_id = _next_task_id()
-    policy_message = _apply_command_policy(
-        text=text,
-        source="heartbeat",
-        task_id=background_task_id,
-        file_name=None,
-        file_context=None,
-        bypass_confirmation=False,
-        is_background=True,
-    )
-    if policy_message:
-        return policy_message
+
 
     # Хардкодный обработчик Telegram
     tg_auth_match = re.search(r"(?:авторизуй|подключи)\s+(?:телеграм|телогу|телеге)\s+(?:по\s+номеру\s+)?([\+\d\s\-\(\)]+)", text, re.IGNORECASE)
@@ -1351,6 +1333,11 @@ def ask_llm(
 ) -> str:
     if _is_simple_greeting(user_text):
         return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
+        
+    # Агрессивно отключаем инструменты для "пустой" болтовни и ругани,
+    # чтобы модель случайно не запустила web_search или telegram.
+    if allow_tools and _is_small_talk(user_text):
+        allow_tools = False
 
     if _should_use_web_search(user_text):
         try:
@@ -1642,40 +1629,7 @@ def _handle_tool_calls(
         except Exception:
             is_plugin_candidate = False
 
-        decision = policy_engine.evaluate_tool(
-            tool_name=(f"plugin__{tool_name}" if is_plugin_candidate else tool_name),
-            args=args,
-            source=source,
-            is_background=is_background,
-        )
 
-        _send_ws(
-            {
-                "type": "action_explain",
-                "task_id": task_id,
-                "action_key": decision.action_key,
-                "risk": decision.risk.label(),
-                "explain": decision.explain,
-            }
-        )
-
-        audit_logger.write_event(
-            "tool.evaluated",
-            {
-                "task_id": task_id,
-                "tool_name": tool_name,
-                "risk": decision.risk.label(),
-                "allowed": decision.allowed,
-                "require_confirm": decision.require_confirm,
-                "args": args,
-            },
-        )
-
-        if not decision.allowed:
-            error_line = f"{tool_name}: blocked by policy ({decision.denied_reason})"
-            tool_outputs.append(error_line)
-            tool_errors.append(error_line)
-            continue
 
         if tool_name in {"create_document", "code_interpreter"} and _is_plain_code_request(user_text):
             return ask_llm(

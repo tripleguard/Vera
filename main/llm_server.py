@@ -17,7 +17,7 @@ import ctypes
 import json
 
 import requests
-from main.config_manager import get_install_root
+from main.config_manager import get_install_root, get_data_dir, get_config
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -98,14 +98,13 @@ class LlamaServer:
 
     def __init__(
         self,
-        model_path: str,
         ctx_size: int = 16384,
         port: int = 29741,
         host: str = "127.0.0.1",
         n_gpu_layers: int = -1,
         extra_args: Optional[List[str]] = None,
     ):
-        self.model_path = self._resolve_model_path(model_path)
+        self.model_path = self._resolve_model_path()
         self.ctx_size = ctx_size
         self.port = port
         self.host = host
@@ -151,15 +150,28 @@ class LlamaServer:
             "--host", self.host,
             "--n-gpu-layers", str(self.n_gpu_layers),
             "--jinja",
+            "--fit", "off",
         ]
         cmd.extend(self.extra_args)
 
         print(f"[LLM_SERVER] Запуск: {' '.join(cmd)}")
 
+        # Создаем директорию для логов, если её нет
+        log_dir = get_data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file_path = log_dir / "llama_server.log"
+        
+        # Открываем файл для записи вывода сервера
+        # Используем 'a' (append), чтобы не затирать логи при каждом перезапуске
+        log_file = open(log_file_path, "a", encoding="utf-8")
+        log_file.write(f"\n\n--- Запуск сервера: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+        log_file.flush()
+
         self._process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=log_file,
             stderr=subprocess.STDOUT,
+            cwd=str(self._exe_path.parent),
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         
@@ -217,21 +229,31 @@ class LlamaServer:
 
     # ── приватные методы ──
 
-    def _resolve_model_path(self, path: str) -> Path:
-        """Находит путь к модели. 'auto' — ищет первый .gguf в папке проекта."""
-        path = str(path or "").strip()
-        if not path or path.lower() == "auto":
-            project_root = get_install_root()
-            gguf_files = sorted(project_root.glob("*.gguf"))
-            if not gguf_files:
-                raise FileNotFoundError("No .gguf model found in install root")
-            chosen = gguf_files[0]
-            print(f"[LLM_SERVER] Авто-определение модели: {chosen.name}")
-            return chosen
-        model_path = Path(path)
-        if not model_path.is_absolute():
-            model_path = get_install_root() / model_path
-        return model_path.resolve()
+    def _resolve_model_path(self) -> Path:
+        """Находит путь к модели через ConfigManager или авто-поиск."""
+        # Пытаемся взять уже разрешенный путь из конфига
+        config_path = get_config().get("model", "path")
+        if config_path and Path(config_path).exists():
+            return Path(config_path).resolve()
+
+        # Fallback: ручной поиск если в конфиге пусто
+        project_root = get_install_root()
+        gguf_files = sorted(project_root.glob("*.gguf"))
+        if not gguf_files:
+            # Also check parent dirs (for Inno Setup layout)
+            for parent in project_root.parents:
+                gguf_files = sorted(parent.glob("*.gguf"))
+                if gguf_files:
+                    break
+                if parent == project_root.parent.parent:
+                    break
+        
+        if not gguf_files:
+            raise FileNotFoundError("Критическая ошибка: Файл модели .gguf не найден в папке приложения.")
+        
+        chosen = gguf_files[0]
+        print(f"[LLM_SERVER] Авто-определение модели: {chosen.name}")
+        return chosen.resolve()
 
     def _find_executable(self) -> Optional[Path]:
         """Ищет llama-server.exe в папке проекта и подпапках."""
@@ -244,6 +266,13 @@ class LlamaServer:
         for candidate in project_root.rglob(self._EXE_NAME):
             if candidate.is_file():
                 return candidate
+        # В родительских папках (для Inno Setup)
+        for parent in project_root.parents:
+            candidate = parent / self._EXE_NAME
+            if candidate.is_file():
+                return candidate
+            if parent == project_root.parent.parent:
+                break
         return None
 
     def _wait_for_health(self) -> bool:

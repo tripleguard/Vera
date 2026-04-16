@@ -1,69 +1,69 @@
 {
-  "model": {
-    "path": "auto",
-    "ctx_size": 16384,
-    "server_port": 29741,
-    "temperature": 0.5,
-    "top_p": 0.8,
-    "top_k": 20,
-    "min_p": 0,
-    "repeat_penalty": 1.1,
-    "max_tokens": 0,
-    "chat_format": "chatml",
-    "thinking_enabled": true,
-    "reasoning_budget": 4096,
-    "max_thought_chars": 10000,
-    "use_external_server": false,
-    "external_api_url": "http://127.0.0.1:1234"
-  },
-  "sherpa_onnx": {
-    "model_dir": "sherpa-onnx-streaming-zipformer-small-ru-vosk-2025-08-16",
-    "tokens": "tokens.txt",
-    "encoder": "encoder.onnx",
-    "decoder": "decoder.onnx",
-    "joiner": "joiner.onnx",
-    "samplerate": 16000,
-    "provider": "cpu",
-    "num_threads": 1,
-    "decoding_method": "greedy_search",
-    "enable_endpoint_detection": true,
-    "rule1_min_trailing_silence": 2.4,
-    "rule2_min_trailing_silence": 1.2,
-    "rule3_min_utterance_length": 300
-  },
-  "activation_word": "Вера",
-  "silence_timeout": 2,
-  "tts": {
-    "voice_index": 3,
-    "rate": 180,
-    "volume": 0.8
-  },
-  "sites": {
-    "ютуб": "https://www.youtube.com/",
-    "хабр": "https://habr.com/ru/",
-    "вк": "https://vk.com/",
-    "рутуб": "http://rutube.ru",
-    "гитхаб": "https://github.com/"
-  },
-  "web_search": {
-    "temperature": 0,
-    "top_p": 0.95,
-    "max_sources": 3,
-    "page_timeout_sec": 3.5,
-    "per_page_limit": 900,
-    "llm_max_tokens": 256,
-    "oversample_links_factor": 2,
-    "oversample_candidates_factor": 2,
-    "log_page_errors": false,
-    "max_bytes_per_page": 60000,
-    "disable_time_limits": true,
-    "total_context_limit": 2700,
-    "cache_ttl_sec": 600,
-    "cache_max_entries": 100,
-    "early_stop_min_sources": 3,
-    "early_stop_timeout": 4
-  },
-  "heartbeat": {
-    "enabled": true
-  }
+    "model":  {
+                  "path":  "auto",
+                  "ctx_size":  8192,
+                  "server_port":  29741,
+                  "temperature":  0.5,
+                  "top_p":  0.8,
+                  "top_k":  20,
+                  "min_p":  0,
+                  "repeat_penalty":  1.1,
+                  "max_tokens":  0,
+                  "chat_format":  "chatml",
+                  "thinking_enabled":  true,
+                  "reasoning_budget":  4096,
+                  "max_thought_chars":  10000,
+                  "use_external_server":  false,
+                  "external_api_url":  "http://127.0.0.1:1234"
+              },
+    "sherpa_onnx":  {
+                        "model_dir":  "sherpa-onnx-streaming-zipformer-small-ru-vosk-2025-08-16",
+                        "tokens":  "tokens.txt",
+                        "encoder":  "encoder.onnx",
+                        "decoder":  "decoder.onnx",
+                        "joiner":  "joiner.onnx",
+                        "samplerate":  16000,
+                        "provider":  "cpu",
+                        "num_threads":  1,
+                        "decoding_method":  "greedy_search",
+                        "enable_endpoint_detection":  true,
+                        "rule1_min_trailing_silence":  2.4,
+                        "rule2_min_trailing_silence":  1.2,
+                        "rule3_min_utterance_length":  300
+                    },
+    "activation_word":  "Вера",
+    "silence_timeout":  2,
+    "tts":  {
+                "voice_index":  3,
+                "rate":  180,
+                "volume":  0.8
+            },
+    "sites":  {
+                  "ютуб":  "https://www.youtube.com/",
+                  "хабр":  "https://habr.com/ru/",
+                  "вк":  "https://vk.com/",
+                  "рутуб":  "http://rutube.ru",
+                  "гитхаб":  "https://github.com/"
+              },
+    "web_search":  {
+                       "temperature":  0,
+                       "top_p":  0.95,
+                       "max_sources":  3,
+                       "page_timeout_sec":  3.5,
+                       "per_page_limit":  900,
+                       "llm_max_tokens":  256,
+                       "oversample_links_factor":  2,
+                       "oversample_candidates_factor":  2,
+                       "log_page_errors":  false,
+                       "max_bytes_per_page":  60000,
+                       "disable_time_limits":  true,
+                       "total_context_limit":  2700,
+                       "cache_ttl_sec":  600,
+                       "cache_max_entries":  100,
+                       "early_stop_min_sources":  3,
+                       "early_stop_timeout":  4
+                   },
+    "heartbeat":  {
+                      "enabled":  true
+                  }
 }

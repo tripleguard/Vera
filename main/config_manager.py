@@ -15,7 +15,6 @@ MIGRATION_MARKER = ".migration_v1_done"
 
 DEFAULT_CONFIG = {
     "model": {
-        "path": "auto",
         "ctx_size": 8192,
         "server_port": 29741,
         "temperature": 0.3,
@@ -80,11 +79,7 @@ DEFAULT_CONFIG = {
     "heartbeat": {
         "enabled": True,
     },
-    "safety": {
-        "default_mode": "guarded",
-        "confirm_threshold": "high",
-        "background_policy": "deny-high",
-    },
+
     "ui": {
         "performance_mode": "balanced",
         "animation_adaptive": True,
@@ -158,6 +153,18 @@ def get_install_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+def _get_bundled_data_dir() -> Path:
+    """
+    Returns path to bundled data templates.
+    For PyInstaller: inside _MEIPASS/data/
+    For dev: install_root/data/
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass) / "data"
+    return get_install_root() / "data"
 
 
 def _get_legacy_data_dir() -> Path:
@@ -262,8 +269,9 @@ def ensure_data_layout_and_migrate() -> Path:
             return data_dir
 
         legacy_data_dir = _get_legacy_data_dir()
+        bundled_data_dir = _get_bundled_data_dir()
         _migrate_legacy_data_if_needed(data_dir, legacy_data_dir)
-        _seed_default_files(data_dir, legacy_data_dir)
+        _seed_default_files(data_dir, bundled_data_dir)
 
         for dirname in _MUTABLE_DIRS:
             (data_dir / dirname).mkdir(parents=True, exist_ok=True)
@@ -313,17 +321,6 @@ class ConfigManager:
             json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
         logger.info("Created default config: %s", self._config_path)
 
-    def _resolve_relative_model_path(self, model_path: str) -> Optional[Path]:
-        install_root = get_install_root()
-        data_root = get_data_dir()
-        candidates = [
-            install_root / model_path,
-            data_root / model_path,
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return None
 
     def _resolve_paths(self) -> None:
         if self._config is None:
@@ -331,24 +328,14 @@ class ConfigManager:
 
         install_root = get_install_root()
 
-        if "model" in self._config and "path" in self._config["model"]:
-            model_path = str(self._config["model"].get("path", "") or "").strip()
-
-            if not model_path or model_path.lower() == "auto":
-                gguf_path = self._find_gguf_model(install_root)
-                if gguf_path:
-                    self._config["model"]["path"] = str(gguf_path)
-                    logger.info("LLM model auto-detected: %s", gguf_path)
-            elif not os.path.isabs(model_path):
-                resolved = self._resolve_relative_model_path(model_path)
-                if resolved:
-                    self._config["model"]["path"] = str(resolved)
-                    logger.info("LLM model path resolved: %s", resolved)
-                else:
-                    gguf_path = self._find_gguf_model(install_root)
-                    if gguf_path:
-                        self._config["model"]["path"] = str(gguf_path)
-                        logger.info("Specified model not found, using: %s", gguf_path)
+        # LLM model resolution (always auto-detect now)
+        gguf_path = self._find_gguf_model(install_root)
+        if gguf_path:
+            # We store it in self._config for runtime use, but it won't be in the saved config.json
+            if "model" not in self._config:
+                self._config["model"] = {}
+            self._config["model"]["path"] = str(gguf_path)
+            logger.info("LLM model auto-detected: %s", gguf_path)
 
         if "sherpa_onnx" not in self._config:
             self._config["sherpa_onnx"] = copy.deepcopy(DEFAULT_CONFIG["sherpa_onnx"])
@@ -371,6 +358,14 @@ class ConfigManager:
         try:
             gguf_files = list(search_dir.glob("*.gguf"))
             gguf_files.extend(search_dir.glob("models/*.gguf"))
+            # Also check parent dirs (for Inno Setup layout)
+            if not gguf_files:
+                for parent in search_dir.parents:
+                    gguf_files = list(parent.glob("*.gguf"))
+                    if gguf_files:
+                        break
+                    if parent == search_dir.parent.parent:
+                        break
             if gguf_files:
                 gguf_files.sort(key=lambda p: p.stat().st_size, reverse=True)
                 return gguf_files[0]
@@ -382,7 +377,7 @@ class ConfigManager:
         if not self._config_path.exists():
             raise FileNotFoundError(f"Config file not found: {self._config_path}")
 
-        with self._config_path.open(encoding="utf-8") as f:
+        with self._config_path.open(encoding="utf-8-sig") as f:
             self._raw_config = json.load(f)
             self._config = copy.deepcopy(self._raw_config)
             logger.info("Configuration loaded from %s", self._config_path)
