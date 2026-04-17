@@ -65,6 +65,7 @@ Source: "{#StagingDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 ; Скрипты скачивания (всегда включены, для пользователя)
 Source: "download_llama_server.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "download_model.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "timer.mp3"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 ; Папка данных пользователя (всегда в AppData)
