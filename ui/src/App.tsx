@@ -9,6 +9,19 @@ import { Settings } from 'lucide-react';
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 const shell = window.require ? window.require('electron').shell : null;
 
+const apiToken = ipcRenderer ? ipcRenderer.sendSync('get-api-token-sync') : '';
+
+async function veraFetch(url: RequestInfo, options: RequestInit = {}): Promise<Response> {
+    if (apiToken) {
+        options.headers = {
+            ...options.headers,
+            'Authorization': `Bearer ${apiToken}`,
+            'X-Vera-Token': apiToken
+        };
+    }
+    return fetch(url, options);
+}
+
 function parseMessage(text: string): { cleanText: string; sources: string[], docPath: string | null } {
     const sources: string[] = [];
     let cleanText = text || '';
@@ -182,37 +195,19 @@ function AssistantMessageText({ text, isLightMode }: { text: string, isLightMode
 function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) {
     const [config, setConfig] = useState<any>(null);
     const [tasks, setTasks] = useState<any[]>([]);
-    const [plugins, setPlugins] = useState<any[]>([]);
-    const [pluginsLoading, setPluginsLoading] = useState(false);
-    const [pluginBusyId, setPluginBusyId] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
-
-    const fetchPlugins = useCallback(async () => {
-        setPluginsLoading(true);
-        try {
-            const res = await fetch('http://127.0.0.1:8000/api/plugins');
-            const data = await res.json();
-            setPlugins(Array.isArray(data) ? data : []);
-        } catch (err: any) {
-            setMessage('Ошибка загрузки плагинов: ' + (err?.message || String(err)));
-        } finally {
-            setPluginsLoading(false);
-        }
-    }, []);
 
     useEffect(() => {
         if (isOpen) {
             setMessage('');
             Promise.all([
-                fetch('http://127.0.0.1:8000/api/config').then(res => res.json()),
-                fetch('http://127.0.0.1:8000/api/heartbeat-tasks').then(res => res.json()),
-                fetch('http://127.0.0.1:8000/api/plugins').then(res => res.json())
+                veraFetch('http://127.0.0.1:8000/api/config').then(res => res.json()),
+                veraFetch('http://127.0.0.1:8000/api/heartbeat-tasks').then(res => res.json())
             ])
-                .then(([cfgData, tasksData, pluginsData]) => {
+                .then(([cfgData, tasksData]) => {
                     setConfig(cfgData);
                     setTasks(Array.isArray(tasksData) ? tasksData : []);
-                    setPlugins(Array.isArray(pluginsData) ? pluginsData : []);
                 })
                 .catch(err => setMessage('Ошибка загрузки настроек: ' + err.message));
         }
@@ -224,12 +219,12 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
         setLoading(true);
         try {
             await Promise.all([
-                fetch('http://127.0.0.1:8000/api/config', {
+                veraFetch('http://127.0.0.1:8000/api/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(config)
                 }),
-                fetch('http://127.0.0.1:8000/api/heartbeat-tasks', {
+                veraFetch('http://127.0.0.1:8000/api/heartbeat-tasks', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tasks: tasks })
@@ -342,51 +337,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
         setTasks(prev => prev.filter((_, i) => i !== index));
     };
 
-    const togglePlugin = async (pluginId: string, enabled: boolean) => {
-        setPluginBusyId(pluginId);
-        // Оптимистичное обновление
-        setPlugins(prev => prev.map(p => p.plugin_id === pluginId ? { ...p, enabled } : p));
-        try {
-            const res = await fetch('http://127.0.0.1:8000/api/plugins/toggle', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ plugin_id: pluginId, enabled }),
-            });
-            if (!res.ok) {
-                throw new Error(await res.text());
-            }
-            await fetchPlugins();
-        } catch (err: any) {
-            setMessage('Ошибка переключения плагина: ' + (err?.message || String(err)));
-            // Откат
-            setPlugins(prev => prev.map(p => p.plugin_id === pluginId ? { ...p, enabled: !enabled } : p));
-            await fetchPlugins();
-        } finally {
-            setPluginBusyId(null);
-        }
-    };
 
-    const uninstallPlugin = async (pluginId: string) => {
-        setPluginBusyId(pluginId);
-        // Оптимистичное удаление
-        setPlugins(prev => prev.filter(p => p.plugin_id !== pluginId));
-        try {
-            const res = await fetch('http://127.0.0.1:8000/api/plugins/uninstall', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ plugin_id: pluginId }),
-            });
-            if (!res.ok) {
-                throw new Error(await res.text());
-            }
-            await fetchPlugins();
-        } catch (err: any) {
-            setMessage('Ошибка удаления плагина: ' + (err?.message || String(err)));
-            await fetchPlugins(); // Вернем обратно, загрузив с сервера
-        } finally {
-            setPluginBusyId(null);
-        }
-    };
 
     return (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 text-white">
@@ -561,17 +512,16 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
 
                             <div className="h-px bg-white/5 w-full" />
 
-                            {/* Audio TTS */}
                             <section>
                                 <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest mb-4">Озвучивание (TTS)</h3>
                                 <div className="space-y-4">
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label className="block text-sm opacity-80 mb-1">Скорость речи (rate)</label>
+                                            <label className="block text-sm opacity-80 mb-1">Скорость речи (speed)</label>
                                             <input
-                                                type="number"
-                                                value={config.tts?.rate || 0}
-                                                onChange={e => handleChange('tts', 'rate', e.target.value, 'number')}
+                                                type="number" step="0.05"
+                                                value={config.tts?.speed || 1.15}
+                                                onChange={e => handleChange('tts', 'speed', e.target.value, 'float')}
                                                 className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                             />
                                         </div>
@@ -579,20 +529,42 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                             <label className="block text-sm opacity-80 mb-1">Громкость (0.0 - 1.0)</label>
                                             <input
                                                 type="number" step="0.1"
-                                                value={config.tts?.volume || 0}
+                                                value={config.tts?.volume || 0.8}
                                                 onChange={e => handleChange('tts', 'volume', e.target.value, 'float')}
                                                 className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                             />
                                         </div>
                                     </div>
-                                    <div>
-                                        <label className="block text-sm opacity-80 mb-1">Индекс системного голоса</label>
-                                        <input
-                                            type="number"
-                                            value={config.tts?.voice_index || 0}
-                                            onChange={e => handleChange('tts', 'voice_index', e.target.value, 'number')}
-                                            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
-                                        />
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm opacity-80 mb-1">Голос</label>
+                                            <select
+                                                value={config.tts?.voice_name || 'Lily'}
+                                                onChange={e => handleChange('tts', 'voice_name', e.target.value, 'string')}
+                                                className="w-full bg-[#161616] border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30 text-white"
+                                            >
+                                                <option value="Lily">Lily (Женский F2 - Рекомендуемый)</option>
+                                                <option value="F1">Женский F1</option>
+                                                <option value="F2">Женский F2 (Lily)</option>
+                                                <option value="F3">Женский F3</option>
+                                                <option value="F4">Женский F4</option>
+                                                <option value="F5">Женский F5</option>
+                                                <option value="M1">Мужской M1</option>
+                                                <option value="M2">Мужской M2</option>
+                                                <option value="M3">Мужской M3</option>
+                                                <option value="M4">Мужской M4</option>
+                                                <option value="M5">Мужской M5</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm opacity-80 mb-1">Шаги синтеза (total_steps)</label>
+                                            <input
+                                                type="number" min="1" max="10"
+                                                value={config.tts?.total_steps || 4}
+                                                onChange={e => handleChange('tts', 'total_steps', e.target.value, 'number')}
+                                                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
+                                            />
+                                        </div>
                                     </div>
                                 </div>
                             </section>
@@ -758,73 +730,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean, onClose: () => vo
                                 </div>
                             </section>
 
-                            <div className="h-px bg-white/5 w-full" />
 
-                            <section>
-                                <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest">Менеджер плагинов</h3>
-                                    <button
-                                        onClick={fetchPlugins}
-                                        className="text-xs text-cyan-300 hover:text-cyan-200 font-medium px-2 py-1 bg-white/5 hover:bg-white/10 rounded-md transition-all"
-                                    >
-                                        Обновить
-                                    </button>
-                                </div>
-
-                                {pluginsLoading ? (
-                                    <div className="text-sm opacity-60">Загрузка плагинов...</div>
-                                ) : plugins.length === 0 ? (
-                                    <div className="text-sm opacity-50 px-2 py-4 border border-dashed border-white/10 rounded-lg text-center">
-                                        Нет установленных плагинов
-                                    </div>
-                                ) : (
-                                    <div className="space-y-3">
-                                        {plugins.map((plugin) => {
-                                            const pid = String(plugin.plugin_id || '');
-                                            const isBusy = pluginBusyId === pid;
-                                            const enabled = Boolean(plugin.enabled);
-                                            return (
-                                                <div key={pid} className="p-3 rounded-lg border border-white/10 bg-white/5">
-                                                    <div className="flex items-start justify-between gap-3">
-                                                        <div>
-                                                            <div className="text-sm font-semibold">{plugin.name || pid}</div>
-                                                            <div className="text-xs opacity-60 mt-1">
-                                                                id: {pid} | v{plugin.version || '-'}
-                                                            </div>
-                                                            <div className="text-xs opacity-60 mt-1">
-                                                                доверие: {plugin.trust_level || '-'} | рантайм: {plugin.runtime_profile || '-'}
-                                                            </div>
-                                                        </div>
-                                                        <div className="flex items-center gap-2">
-                                                            <button
-                                                                disabled={isBusy}
-                                                                onClick={() => togglePlugin(pid, !enabled)}
-                                                                className={`px-2.5 py-1.5 text-xs rounded-md transition-all ${enabled
-                                                                    ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
-                                                                    : 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
-                                                                    } disabled:opacity-40`}
-                                                            >
-                                                                {enabled ? 'Выключить' : 'Включить'}
-                                                            </button>
-                                                            <button
-                                                                disabled={isBusy}
-                                                                onClick={() => uninstallPlugin(pid)}
-                                                                className="px-2.5 py-1.5 text-xs rounded-md bg-red-500/20 text-red-300 hover:bg-red-500/30 disabled:opacity-40"
-                                                            >
-                                                                Удалить
-                                                            </button>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="mt-2 text-xs opacity-70">
-                                                        возможностей: {Array.isArray(plugin.capabilities) ? plugin.capabilities.length : 0}
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-                            </section>
                         </div>
                     )}
                 </div>
@@ -865,17 +771,199 @@ export default function App() {
     return <ChatView />;
 }
 
-function WidgetView() {
-    const [status, setStatus] = useState('listening'); // 'listening', 'thinking', 'speaking'
+const SOUNDWAVE_BASE_HEIGHTS = [8, 14, 20, 26, 32, 26, 20, 14, 8];
+
+function SoundWave({ isSpeaking, isThinking }: { isSpeaking: boolean; isThinking: boolean }) {
+    const barsCount = 9;
+    const [isAfk, setIsAfk] = useState(false);
 
     useEffect(() => {
+        setIsAfk(false);
+        if (isSpeaking || isThinking) {
+            return;
+        }
+        
+        // Таймер бездействия на 25 секунд
+        const timer = setTimeout(() => {
+            setIsAfk(true);
+        }, 25000);
+
+        return () => clearTimeout(timer);
+    }, [isSpeaking, isThinking]);
+
+    return (
+        <motion.div 
+            className="relative w-[43px] h-10 flex items-center justify-center cursor-pointer no-drag-region"
+            animate={isAfk ? { rotate: 360 } : { rotate: 0 }}
+            transition={isAfk ? { repeat: Infinity, duration: 3.5, ease: "linear" } : { duration: 0.5 }}
+        >
+            {Array.from({ length: barsCount }).map((_, i) => {
+                const baseHeight = SOUNDWAVE_BASE_HEIGHTS[i];
+                
+                // Анимация высоты полос
+                let heightAnimate: any = 3; // По умолчанию (listening) - плоские точки (3px)
+                let transition: any = { duration: 0.3 };
+
+                if (isSpeaking && !isAfk) {
+                    const peak = baseHeight;
+                    const valley = 3;
+                    
+                    // Симуляция речи: псевдослучайные флуктуации (слоги и интонации)
+                    heightAnimate = [
+                        valley,
+                        peak * 0.4,
+                        peak * 0.9,
+                        valley * 1.5,
+                        peak * 0.6,
+                        peak * 1.0,
+                        valley,
+                        peak * 0.5,
+                        peak * 0.8,
+                        valley
+                    ];
+                    
+                    transition = {
+                        duration: 1.4,
+                        repeat: Infinity,
+                        repeatType: "loop",
+                        ease: "easeInOut",
+                        delay: Math.abs(4 - i) * 0.07, // расходится от центра к краям симметрично
+                    };
+                } else if (isThinking && !isAfk) {
+                    // Медленная, плавная пульсация от центра к краям в режиме размышления
+                    heightAnimate = [3, baseHeight * 0.4, 3];
+                    transition = {
+                        duration: 2.0,
+                        repeat: Infinity,
+                        repeatType: "mirror",
+                        ease: "easeInOut",
+                        delay: Math.abs(4 - i) * 0.15,
+                    };
+                }
+
+                // Расчет координат x и y в зависимости от режима AFK (радиус увеличен до 13)
+                const angle = (i * 40 * Math.PI) / 180;
+                const targetX = isAfk ? 13 * Math.cos(angle) : (i - 4) * 5;
+                const targetY = isAfk ? 13 * Math.sin(angle) : 0;
+
+                // Цвета, прозрачность и свечение
+                let colorStyle = "rgba(255, 255, 255, 0.35)"; // Muted white when listening
+                let dropShadow = "none";
+
+                if (isSpeaking && !isAfk) {
+                    colorStyle = "#ffffff";
+                    dropShadow = "drop-shadow(0 0 4px rgba(255, 255, 255, 0.75))";
+                } else if (isThinking && !isAfk) {
+                    colorStyle = "rgba(255, 255, 255, 0.85)";
+                    dropShadow = "drop-shadow(0 0 3px rgba(255, 255, 255, 0.45))";
+                } else if (isAfk) {
+                    // Градиент прозрачности для крутящегося кольца (эффект шлейфа)
+                    const opacity = 0.2 + (i / 8) * 0.8;
+                    colorStyle = `rgba(255, 255, 255, ${opacity})`;
+                    dropShadow = `drop-shadow(0 0 3px rgba(255, 255, 255, ${opacity * 0.5}))`;
+                }
+
+                return (
+                    <motion.div
+                        key={i}
+                        className="absolute w-[3px] rounded-full transition-colors duration-300"
+                        style={{
+                            height: 3,
+                            backgroundColor: colorStyle,
+                            filter: dropShadow,
+                        }}
+                        animate={{
+                            height: heightAnimate,
+                            x: targetX,
+                            y: targetY,
+                        }}
+                        transition={{
+                            height: isAfk ? { type: "tween", ease: "easeInOut", duration: 1.5 } : transition,
+                            // Медленный плавный переход координат при морфинге (1.5 сек)
+                            x: { type: "tween", ease: "easeInOut", duration: 1.5 },
+                            y: { type: "tween", ease: "easeInOut", duration: 1.5 }
+                        }}
+                    />
+                );
+            })}
+        </motion.div>
+    );
+}
+
+function WidgetView() {
+    const [status, setStatus] = useState('listening');
+
+    const [timerDeadline, setTimerDeadline] = useState(() => {
+        const saved = localStorage.getItem('vera_timer_deadline');
+        if (!saved) return null;
+        const v = parseFloat(saved);
+        return (!isNaN(v) && v > Date.now() / 1000) ? v : null;
+    });
+    const [timerDisplay, setTimerDisplay] = useState('');
+    const timerDeadlineRef = useRef(null);
+
+    useEffect(() => {
+        timerDeadlineRef.current = timerDeadline as any;
+    }, [timerDeadline]);
+
+    useEffect(() => {
+        if (!timerDeadline) {
+            setTimerDisplay('');
+            return;
+        }
+        const tick = () => {
+            const rem = (timerDeadlineRef.current ?? 0) - Date.now() / 1000;
+            if (rem <= 0) {
+                setTimerDeadline(null);
+                localStorage.removeItem('vera_timer_deadline');
+                setTimerDisplay('');
+                return;
+            }
+            const h = Math.floor(rem / 3600);
+            const m = Math.floor((rem % 3600) / 60);
+            const s = Math.floor(rem % 60);
+            setTimerDisplay(
+                `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+            );
+        };
+        tick();
+        const timerId = setInterval(tick, 1000);
+        return () => clearInterval(timerId);
+    }, [timerDeadline]);
+
+    useEffect(() => {
+        const onMessage = (event: MessageEvent) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'timer_delete') {
+                    setTimerDeadline(null);
+                    localStorage.removeItem('vera_timer_deadline');
+                    setTimerDisplay('');
+                }
+            } catch (e) { }
+        };
+        window.addEventListener('message', onMessage);
+        return () => window.removeEventListener('message', onMessage);
+    }, []);
+
+    useEffect(() => {
+        const wsUrl = apiToken ? `ws://127.0.0.1:8000/ws?token=${apiToken}` : 'ws://127.0.0.1:8000/ws';
         return connectSocketWithReconnect(
-            'ws://127.0.0.1:8000/ws',
+            wsUrl,
             {
                 onMessage: (event) => {
                     try {
                         const data = JSON.parse(event.data);
-                        if (data.type === 'state') setStatus(data.value);
+                        if (data.type === 'state') {
+                            setStatus(data.value);
+                        } else if (data.type === 'timer_start' && typeof data.deadline === 'number') {
+                            setTimerDeadline(data.deadline);
+                            localStorage.setItem('vera_timer_deadline', String(data.deadline));
+                        } else if (data.type === 'timer_done') {
+                            setTimerDeadline(null);
+                            localStorage.removeItem('vera_timer_deadline');
+                            setTimerDisplay('');
+                        }
                     } catch (e) { }
                 },
             },
@@ -887,39 +975,45 @@ function WidgetView() {
         if (ipcRenderer) ipcRenderer.send('toggle-chat');
     };
 
-    // Р¦РІРµС‚Р° Рё Р°РЅРёРјР°С†РёРё РІ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РѕС‚ СЃРѕСЃС‚РѕСЏРЅРёСЏ
     const isSpeaking = status === 'speaking';
     const isThinking = status === 'thinking';
-    const reduceMotion = true;
+    const showTimer = !!timerDeadline && !!timerDisplay;
 
     return (
         <div
             className="w-full h-full flex items-center justify-center bg-[#111111]/90 backdrop-blur-md rounded-2xl border border-white/10 shadow-2xl drag-region select-none overflow-hidden hover:bg-[#1a1a1a]/90 transition-colors"
         >
-            <div className="relative flex items-center justify-center w-12 h-12 cursor-pointer no-drag-region" onClick={handleClick}>
-                {/* РџСѓР»СЊСЃРёСЂСѓСЋС‰Р°СЏ РѕР±РІРѕРґРєР° РїСЂРё СЂР°Р·РіРѕРІРѕСЂРµ */}
-                {isSpeaking && (
-                    <div className="absolute inset-0 bg-white rounded-full opacity-75 animate-ping-slow transition-all"></div>
-                )}
-
-                {/* Р“Р»Р°РІРЅС‹Р№ РєСЂСѓР¶РѕРє */}
-                <motion.div
-                    animate={{
-                        scale: reduceMotion ? 1 : (isSpeaking ? [1, 1.1, 1] : isThinking ? [1, 0.9, 1] : 1),
-                        backgroundColor: isSpeaking ? '#ffffff' : isThinking ? '#e2e8f0' : '#64748b'
-                    }}
-                    transition={{
-                        duration: reduceMotion ? 0.2 : (isSpeaking ? 0.8 : isThinking ? 1.5 : 0.3),
-                        repeat: reduceMotion ? 0 : ((isSpeaking || isThinking) ? Infinity : 0),
-                        ease: "easeInOut"
-                    }}
-                    className={`relative w-8 h-8 rounded-full shadow-lg ${!isSpeaking && !isThinking ? 'opacity-70 hover:opacity-100' : ''}`}
-                />
-            </div>
+            {showTimer ? (
+                <div
+                    className="flex flex-col items-center justify-center cursor-pointer no-drag-region"
+                    onClick={handleClick}
+                    title="Timer active"
+                >
+                    {timerDisplay.split(':').map((part, i) => (
+                        <div
+                            key={i}
+                            style={{
+                                fontFamily: '"JetBrains Mono", "Fira Mono", "Courier New", monospace',
+                                fontSize: '15px',
+                                fontWeight: 700,
+                                letterSpacing: '0.06em',
+                                color: i === 0 ? 'rgba(255,255,255,0.5)' : '#ffffff',
+                                lineHeight: 1.05,
+                                textShadow: '0 0 10px rgba(255,255,255,0.25)',
+                            }}
+                        >
+                            {part}
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <div className="relative flex items-center justify-center w-12 h-12 cursor-pointer no-drag-region" onClick={handleClick}>
+                    <SoundWave isSpeaking={isSpeaking} isThinking={isThinking} />
+                </div>
+            )}
         </div>
     );
 }
-
 
 interface Message {
     role: string;
@@ -1102,8 +1196,9 @@ function ChatView() {
     }, [flushChunkBatch]);
 
     useEffect(() => {
+        const wsUrl = apiToken ? `ws://127.0.0.1:8000/ws?token=${apiToken}` : 'ws://127.0.0.1:8000/ws';
         return connectSocketWithReconnect(
-            'ws://127.0.0.1:8000/ws',
+            wsUrl,
             {
                 onOpen: (ws) => {
                     wsRef.current = ws;
@@ -1142,23 +1237,7 @@ function ChatView() {
                             // Keep explain events internal (audit/debug), do not show in chat UI.
                             return;
                         }
-                        if (data.type === 'plugin_discovered') {
-                            pushSystemMessage(`Найден пакет плагина: ${data.path}`);
-                            return;
-                        }
-                        if (data.type === 'plugin_install_status') {
-                            pushSystemMessage(`Plugin ${data.plugin_id || ''}: ${data.status}${data.reason ? ` (${data.reason})` : ''}`);
-                            return;
-                        }
-                        if (data.type === 'plugin_permission_request') {
-                            pushSystemMessage(`Плагин ${data.plugin_id} требует подтверждения разрешений.`);
-                            return;
-                        }
-                        if (data.type === 'plugin_capability_added') {
-                            const title = data?.capability?.title || data?.capability?.id || 'new capability';
-                            pushSystemMessage(`Подключена capability плагина: ${title}`);
-                            return;
-                        }
+
                         if (data.type === 'chat') {
                             if (data.role === 'user' && pendingUserMsgs.current.has(data.text)) {
                                 pendingUserMsgs.current.delete(data.text);
@@ -1312,7 +1391,7 @@ function ChatView() {
             try {
                 const formData = new FormData();
                 formData.append('file', attachedFile);
-                const res = await fetch('http://127.0.0.1:8000/api/upload', {
+                const res = await veraFetch('http://127.0.0.1:8000/api/upload', {
                     method: 'POST',
                     body: formData
                 });

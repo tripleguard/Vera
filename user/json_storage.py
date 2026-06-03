@@ -15,14 +15,19 @@ def load_json(file_path: Path, default: Any = None) -> Any:
 
 
 def save_json(file_path: Path, data: Any, log_name: str = "JSON") -> bool:
-    """Save data to a JSON file. Returns True on success."""
+    """Save data to a JSON file atomically. Returns True on success."""
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(
+        tmp_path = file_path.with_suffix(".tmp")
+        tmp_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        # Atomic rename (overwrites target on Windows NTFS)
+        import os
+        os.replace(str(tmp_path), str(file_path))
         return True
     except Exception as e:
         print(f"[{log_name}] Failed to save: {e}")
         return False
+

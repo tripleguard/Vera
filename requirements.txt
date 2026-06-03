@@ -1,5 +1,5 @@
 sherpa-onnx
-pyttsx3
+supertonic
 sounddevice
 websockets
 fastapi

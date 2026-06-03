@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from typing import Optional, List, Tuple
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import urlparse, quote_plus, parse_qs
 
 
 def relevance_score(query: str, text: str) -> int:
@@ -85,41 +85,94 @@ def _collect_links(tags, seen: set, max_results: int) -> list:
     return links
 
 
-def search_brave(query: str, max_results: int = 6) -> List[str]:
+def unwrap_url(href: str) -> str:
+    """Декодирует и очищает URL редиректов DuckDuckGo."""
+    if not href:
+        return ""
+    if href.startswith("//"):
+        href = "https:" + href
+    if "uddg=" in href:
+        try:
+            parsed = urlparse(href)
+            queries = parse_qs(parsed.query)
+            if "uddg" in queries and queries["uddg"]:
+                return queries["uddg"][0]
+        except Exception:
+            pass
+    return href
 
+
+def search_ddg_lite(query: str, max_results: int = 6) -> List[str]:
+    """
+    Выполняет поиск через DuckDuckGo Lite (POST-запрос для чистых прямых ссылок).
+    Служит резервным каналом в случае недоступности Brave Search.
+    """
+    links = []
+    url = "https://lite.duckduckgo.com/lite/"
+    headers = get_default_headers()
+    
+    try:
+        resp = requests.post(url, data={"q": query}, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            print(f"[SEARCH] DuckDuckGo Lite HTTP {resp.status_code}")
+            return []
+            
+        soup = BeautifulSoup(resp.text, "html.parser")
+        seen = set()
+        
+        for a in soup.find_all("a", class_="result-link"):
+            href = a.get("href", "")
+            href = unwrap_url(href)
+            if href.startswith("http") and not any(skip in href.lower() for skip in ["duckduckgo.com", "yandex.", "google."]):
+                if href not in seen:
+                    seen.add(href)
+                    links.append(href)
+                    if len(links) >= max_results:
+                        break
+                        
+        print(f"[SEARCH] DuckDuckGo Lite: найдено {len(links)} ссылок для '{query}'")
+    except Exception as e:
+        print(f"[SEARCH] DuckDuckGo Lite error: {e}")
+        
+    return links
+
+
+def search_brave(query: str, max_results: int = 6) -> List[str]:
     links = []
     try:
         headers = get_default_headers()
         url = f"https://search.brave.com/search?q={quote_plus(query)}"
         resp = requests.get(url, headers=headers, timeout=10)
         
-        if resp.status_code != 200:
-            print(f"[BRAVE] HTTP {resp.status_code}")
-            return []
-        
-        soup = BeautifulSoup(resp.text, "html.parser")
-        seen = set()
-        
-        # Метод 1: div.snippet (основные результаты)
-        links = _collect_links(soup.select("div.snippet"), seen, max_results)
-        
-        # Метод 2: a.result-header (fallback)
-        if not links:
-            links = _collect_links(soup.select("a.result-header"), seen, max_results)
-        
-        # Метод 3: все внешние ссылки (последний fallback)
-        if not links:
-            links = _collect_links(soup.find_all("a", href=True), seen, max_results)
-        
-        if links:
-            print(f"[SEARCH] Brave: найдено {len(links)} ссылок")
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            seen = set()
+            
+            # Метод 1: div.snippet (основные результаты)
+            links = _collect_links(soup.select("div.snippet"), seen, max_results)
+            
+            # Метод 2: a.result-header (fallback)
+            if not links:
+                links = _collect_links(soup.select("a.result-header"), seen, max_results)
+            
+            # Метод 3: все внешние ссылки (последний fallback)
+            if not links:
+                links = _collect_links(soup.find_all("a", href=True), seen, max_results)
+            
+            if links:
+                print(f"[SEARCH] Brave: найдено {len(links)} ссылок")
+                return links
+            else:
+                print(f"[SEARCH] Brave: 0 ссылок найдено для '{query}' (HTML длина: {len(resp.text)})")
         else:
-            print(f"[SEARCH] Brave: 0 ссылок найдено для '{query}' (HTML длина: {len(resp.text)})")
-        
+            print(f"[SEARCH] Brave: HTTP {resp.status_code}")
+            
     except Exception as e:
         print(f"[SEARCH] Brave error: {e}")
-    
-    return links
+        
+    print(f"[SEARCH] Использование резервного поиска через DuckDuckGo Lite для: '{query}'")
+    return search_ddg_lite(query, max_results)
+
 
 
 def extract_visible_text(html: str) -> str:

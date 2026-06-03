@@ -44,6 +44,32 @@ class _Reminder:
 
 _scheduled: list[_Reminder] = []
 _timer_ringing = False
+_scheduled_lock = threading.Lock()
+
+# Callback для отправки WebSocket-сообщений в UI (виджет)
+_ws_callback: Optional[Callable[[dict], None]] = None
+
+def set_ws_callback(cb: Callable[[dict], None]) -> None:
+    """Устанавливает callback для отправки WS-событий таймера в UI."""
+    global _ws_callback
+    _ws_callback = cb
+
+def _emit_ws(msg: dict) -> None:
+    """Безопасная отправка WS-сообщения."""
+    if _ws_callback:
+        try:
+            _ws_callback(msg)
+        except Exception:
+            pass
+
+def _emit_nearest_timer() -> None:
+    """Отправляет timer_start для ближайшего активного таймера, или timer_done если таймеров нет."""
+    timers = [t for t in _scheduled if t.is_timer]
+    if timers:
+        nearest = min(timers, key=lambda t: t.timestamp)
+        _emit_ws({"type": "timer_start", "deadline": nearest.timestamp})
+    else:
+        _emit_ws({"type": "timer_done"})
 
 
 def stop_timer_ring() -> bool:
@@ -137,23 +163,27 @@ class _ReminderScheduler(SchedulerBase):
 
     def _tick(self):
         now = time.time()
-        for task in _scheduled[:]:
-            if now >= task.timestamp:
-                print(f"[{'ТАЙМЕР' if task.is_timer else 'REMINDER'}] {task.message}")
-                
-                if task.is_timer:
-                    _start_timer_ring()
-                    self.speak(task.message + ". Скажите стоп чтобы отключить.")
-                else:
-                    self.speak(task.message)
-                    if _NOTIFICATIONS_ENABLED:
-                        try:
-                            show_reminder_notification("⏰ Напоминание", task.message)
-                        except Exception:
-                            pass
-                
-                _scheduled.remove(task)
+        fired = []
+        with _scheduled_lock:
+            for task in _scheduled[:]:
+                if now >= task.timestamp:
+                    fired.append(task)
+                    _scheduled.remove(task)
+            if fired:
                 _save_reminders()
+        for task in fired:
+            print(f"[{'ТАЙМЕР' if task.is_timer else 'REMINDER'}] {task.message}")
+            if task.is_timer:
+                _start_timer_ring()
+                _emit_nearest_timer()
+                self.speak(task.message + ". Скажите стоп чтобы отключить.")
+            else:
+                self.speak(task.message)
+                if _NOTIFICATIONS_ENABLED:
+                    try:
+                        show_reminder_notification("⏰ Напоминание", task.message)
+                    except Exception:
+                        pass
 
 
 _reminder_scheduler = _ReminderScheduler()
@@ -230,12 +260,16 @@ def execute_reminder_command(text: str) -> Optional[str]:
     """Обрабатывает команды напоминаний и таймеров."""
     lowered = text.lower()
     cleaned = replace_number_words(lowered)
+    return _execute_reminder_inner(cleaned)
+
+def _execute_reminder_inner(cleaned: str) -> Optional[str]:
     
     # Удаление всех напоминаний
     if re.search(r"(удали|отмени|очисти)\s+все\s+напоминани", cleaned):
-        count = len(_scheduled)
-        _scheduled.clear()
-        _save_reminders()
+        with _scheduled_lock:
+            count = len(_scheduled)
+            _scheduled.clear()
+            _save_reminders()
         return f"Удалено напоминаний: {count}" if count else "Напоминаний не было."
     
     # Удаление напоминания
@@ -245,25 +279,28 @@ def execute_reminder_command(text: str) -> Optional[str]:
         target_str = f"{hour:02d}:{minute:02d}"
         
         removed = 0
-        for task in list(_scheduled):
-            try:
-                if parse_time_str(task.ts).strftime("%H:%M") == target_str:
-                    _scheduled.remove(task)
-                    removed += 1
-            except Exception:
-                pass
-        
-        if removed:
-            _save_reminders()
+        with _scheduled_lock:
+            for task in list(_scheduled):
+                try:
+                    if parse_time_str(task.ts).strftime("%H:%M") == target_str:
+                        _scheduled.remove(task)
+                        removed += 1
+                except Exception:
+                    pass
+            if removed:
+                _save_reminders()
         return f"Удалено напоминание на {target_str}" if removed else \
                f"Напоминаний на {target_str} не найдено."
     
     # Удаление всех таймеров
     if re.search(r"(удали|отмени|очисти|\u0441брось?)\s+все\s+таймер", cleaned):
-        timers = [t for t in _scheduled if t.is_timer]
-        for t in timers:
-            _scheduled.remove(t)
-        _save_reminders()
+        with _scheduled_lock:
+            timers = [t for t in _scheduled if t.is_timer]
+            for t in timers:
+                _scheduled.remove(t)
+            _save_reminders()
+        if timers:
+            _emit_ws({"type": "timer_done"})
         return f"Удалено таймеров: {len(timers)}" if timers else "Таймеров не было."
     
     # Удаление таймера по времени: "удали таймер на 5 минут"
@@ -272,22 +309,28 @@ def execute_reminder_command(text: str) -> Optional[str]:
         if unit in TIME_UNITS:
             # Ищем таймер с таким сообщением
             target_msg = f"Таймер {n} {unit} завершён."
-            for task in list(_scheduled):
-                if task.is_timer and task.message == target_msg:
-                    _scheduled.remove(task)
-                    _save_reminders()
-                    return f"Таймер на {n} {unit} удалён."
-            return f"Таймер на {n} {unit} не найден."
+            with _scheduled_lock:
+                for task in list(_scheduled):
+                    if task.is_timer and task.message == target_msg:
+                        _scheduled.remove(task)
+                        _save_reminders()
+                        break
+                else:
+                    return f"Таймер на {n} {unit} не найден."
+            _emit_nearest_timer()
+            return f"Таймер на {n} {unit} удалён."
+
     
     # Удаление таймера без указания времени: "удали таймер", "отмени таймер"
     if re.search(r"(удали|отмени|сбрось?)\s+таймер\b", cleaned):
-        timers = [t for t in _scheduled if t.is_timer]
-        if not timers:
-            return "Активных таймеров нет."
-        # Удаляем последний добавленный таймер
-        last_timer = timers[-1]
-        _scheduled.remove(last_timer)
-        _save_reminders()
+        with _scheduled_lock:
+            timers = [t for t in _scheduled if t.is_timer]
+            if not timers:
+                return "Активных таймеров нет."
+            last_timer = timers[-1]
+            _scheduled.remove(last_timer)
+            _save_reminders()
+        _emit_nearest_timer()
         return f"Таймер удалён."
     
     # Таймер: "таймер на 5 минут", "включи таймер на 10 минут", "поставь таймер на 15 минут"
@@ -295,9 +338,12 @@ def execute_reminder_command(text: str) -> Optional[str]:
         n, unit = int(m.group(1)), m.group(2)
         if unit in TIME_UNITS:
             sec = n * TIME_UNITS[unit]
-            ts_str = _Reminder.from_timestamp(time.time() + sec)
-            _scheduled.append(_Reminder(ts_str, f"Таймер {n} {unit} завершён.", is_timer=True))
-            _save_reminders()
+            deadline = time.time() + sec
+            ts_str = _Reminder.from_timestamp(deadline)
+            with _scheduled_lock:
+                _scheduled.append(_Reminder(ts_str, f"Таймер {n} {unit} завершён.", is_timer=True))
+                _save_reminders()
+            _emit_ws({"type": "timer_start", "deadline": deadline})
             return f"Таймер на {n} {unit} установлен."
     
     # Таймер без числа (по умолчанию 1): "таймер минуту"
@@ -305,9 +351,12 @@ def execute_reminder_command(text: str) -> Optional[str]:
         unit = m.group(1)
         if unit in TIME_UNITS:
             sec = TIME_UNITS[unit]
-            ts_str = _Reminder.from_timestamp(time.time() + sec)
-            _scheduled.append(_Reminder(ts_str, f"Таймер 1 {unit} завершён.", is_timer=True))
-            _save_reminders()
+            deadline = time.time() + sec
+            ts_str = _Reminder.from_timestamp(deadline)
+            with _scheduled_lock:
+                _scheduled.append(_Reminder(ts_str, f"Таймер 1 {unit} завершён.", is_timer=True))
+                _save_reminders()
+            _emit_ws({"type": "timer_start", "deadline": deadline})
             return f"Таймер на 1 {unit} установлен."
     
     # "напомни позвонить маме через 5 минут"
@@ -318,8 +367,9 @@ def execute_reminder_command(text: str) -> Optional[str]:
             target_ts = time.time() + sec
             ts_str = _Reminder.from_timestamp(target_ts)
             target_time = datetime.datetime.fromtimestamp(target_ts).strftime('%H:%M')
-            _scheduled.append(_Reminder(ts_str, message))
-            _save_reminders()
+            with _scheduled_lock:
+                _scheduled.append(_Reminder(ts_str, message))
+                _save_reminders()
             return f"Напоминание на {target_time} установлено."
     
     # "напомни позвонить маме через минуту"
@@ -330,8 +380,9 @@ def execute_reminder_command(text: str) -> Optional[str]:
             target_ts = time.time() + sec
             ts_str = _Reminder.from_timestamp(target_ts)
             target_time = datetime.datetime.fromtimestamp(target_ts).strftime('%H:%M')
-            _scheduled.append(_Reminder(ts_str, message))
-            _save_reminders()
+            with _scheduled_lock:
+                _scheduled.append(_Reminder(ts_str, message))
+                _save_reminders()
             return f"Напоминание на {target_time} установлено."
     
     # "напомни через минуту позвонить маме"
@@ -343,8 +394,9 @@ def execute_reminder_command(text: str) -> Optional[str]:
             target_ts = time.time() + sec
             ts_str = _Reminder.from_timestamp(target_ts)
             target_time = datetime.datetime.fromtimestamp(target_ts).strftime('%H:%M')
-            _scheduled.append(_Reminder(ts_str, message))
-            _save_reminders()
+            with _scheduled_lock:
+                _scheduled.append(_Reminder(ts_str, message))
+                _save_reminders()
             return f"Напоминание на {target_time} установлено."
     
     # "напомни через 5 минут позвонить маме"
@@ -354,8 +406,9 @@ def execute_reminder_command(text: str) -> Optional[str]:
         target_ts = time.time() + sec
         ts_str = _Reminder.from_timestamp(target_ts)
         target_time = datetime.datetime.fromtimestamp(target_ts).strftime('%H:%M')
-        _scheduled.append(_Reminder(ts_str, message))
-        _save_reminders()
+        with _scheduled_lock:
+            _scheduled.append(_Reminder(ts_str, message))
+            _save_reminders()
         return f"Напоминание на {target_time} установлено."
     
     # Напоминание на конкретное время "напоминание на 14:30 позвонить"
@@ -370,8 +423,9 @@ def execute_reminder_command(text: str) -> Optional[str]:
             target += datetime.timedelta(days=1)
         
         ts_str = target.strftime(TIME_FORMAT)
-        _scheduled.append(_Reminder(ts_str, message))
-        _save_reminders()
+        with _scheduled_lock:
+            _scheduled.append(_Reminder(ts_str, message))
+            _save_reminders()
         return f"Напоминание на {target.strftime('%H:%M')} установлено."
     
     return None

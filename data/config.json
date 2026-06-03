@@ -34,9 +34,10 @@
     "activation_word":  "Вера",
     "silence_timeout":  2,
     "tts":  {
-                "voice_index":  3,
-                "rate":  180,
-                "volume":  0.8
+                "voice_name": "Lily",
+                "total_steps": 4,
+                "volume": 0.8,
+                "speed": 1.15
             },
     "sites":  {
                   "ютуб":  "https://www.youtube.com/",

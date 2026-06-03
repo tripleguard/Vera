@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Optional
 import difflib
 import sounddevice as sd
 import sherpa_onnx
-import pyttsx3
+from supertonic import TTS
 from main.llm_server import LlamaServer, LlamaClient
 import msvcrt
 from functools import partial
@@ -18,7 +18,7 @@ from web.web_search import web_search_answer, execute_wikipedia_command
 from web.weather import execute_weather_command
 from web.currency import execute_currency_command
 from .lang_ru import convert_years_in_text
-from .commands import HANDLERS, set_speak_callback, set_last_search_urls_ref, stop_timer_ring, is_timer_ringing
+from .commands import HANDLERS, set_speak_callback, set_last_search_urls_ref, stop_timer_ring, is_timer_ringing, set_timer_ws_callback
 from .commands import set_reminder_shutdown_event
 from .commands import start_heartbeat_scheduler, set_heartbeat_speak_callback, set_heartbeat_route_callback, set_heartbeat_shutdown_event
 from .commands.time_commands import start_scheduler
@@ -31,7 +31,6 @@ from .tools.presentation_generator import is_presentation_request, execute_prese
 from .tools.document_generator import create_pptx
 from .prompt_builder import build_system_prompt, reload_prompt, get_prompt_status
 from .audit import get_audit_logger
-from .plugins import PluginManager
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -291,10 +290,7 @@ def _safe_shutdown():
     except Exception as e:
         print(f"[SAVE] Ошибка остановки LLM-сервера: {e}")
 
-    try:
-        plugin_manager.shutdown()
-    except Exception as e:
-        print(f"[SAVE] Ошибка остановки plugin manager: {e}")
+
     
     # Сохраняем все данные пользователя (безопасный доступ через globals)
     print("Сохранение данных...")
@@ -344,39 +340,7 @@ def queue_command(
     return task_id
 
 
-def list_plugins_state() -> list[dict]:
-    items: list[dict] = []
-    for record in plugin_manager.list_plugins():
-        items.append(
-            {
-                "plugin_id": record.plugin_id,
-                "name": record.name,
-                "version": record.version,
-                "trust_level": record.trust_level,
-                "enabled": record.enabled,
-                "capabilities": record.capabilities,
-                "permissions": record.permissions,
-                "runtime_profile": record.runtime_profile,
-            }
-        )
-    return items
 
-
-def set_plugin_enabled(plugin_id: str, enabled: bool) -> bool:
-    if enabled:
-        ok = plugin_manager.enable_plugin(plugin_id)
-    else:
-        ok = plugin_manager.disable_plugin(plugin_id)
-    if ok:
-        audit_logger.write_event("plugin.toggled", {"plugin_id": plugin_id, "enabled": enabled})
-    return ok
-
-
-def uninstall_plugin(plugin_id: str) -> bool:
-    ok = plugin_manager.uninstall_plugin(plugin_id)
-    if ok:
-        audit_logger.write_event("plugin.uninstalled_via_api", {"plugin_id": plugin_id})
-    return ok
 
 def execute_slash_command(text: str) -> str:
     """Единый обработчик слеш-команд для консоли и GUI."""
@@ -583,54 +547,97 @@ def _tts_worker():
     
     while retry_count < max_retries:
         try:
-            engine = pyttsx3.init()
-            voices = engine.getProperty('voices')
-            voice_index = cfg["tts"]["voice_index"]
-            if 0 <= voice_index < len(voices):
-                engine.setProperty('voice', voices[voice_index].id)
-            engine.setProperty('rate', cfg["tts"]["rate"])
-            engine.setProperty('volume', cfg["tts"]["volume"])
-
-            def on_start(name):
-                _send_ws({"type": "state", "value": "speaking"})
-            def on_end(name, completed):
-                _send_ws({"type": "state", "value": "listening"})
+            print("[TTS] Инициализация Supertonic TTS...")
+            tts = TTS(auto_download=True)
+            print("[TTS] Supertonic TTS успешно инициализирован.")
             
-            engine.connect('started-utterance', on_start)
-            engine.connect('finished-utterance', on_end)
-
-            # Непрерывный цикл обработки без повторного запуска run loop
-            engine.startLoop(False)
+            retry_count = 0
+            
             while True:
-                # Обрабатываем команды из очереди (блокируем с таймаутом вместо busy-wait)
-                try:
-                    cmd = _tts_queue.get(timeout=0.05)
-                except queue.Empty:
-                    cmd = None
-
+                cmd = _tts_queue.get()
                 if cmd is not None:
                     action = cmd.get('cmd')
                     if action == 'say':
                         text = cmd.get('text', '')
                         if text:
-                            engine.say(text)
+                            # 1. Показываем анимацию размышления (загрузка синтеза)
+                            _send_ws({"type": "state", "value": "thinking"})
+                            try:
+                                # Динамически читаем настройки TTS при каждом запросе
+                                voice_name = config.get("tts", "voice_name", default="Lily")
+                                total_steps = int(config.get("tts", "total_steps", default=4))
+                                volume = float(config.get("tts", "volume", default=0.8))
+                                speed = float(config.get("tts", "speed", default=1.15))
+
+                                voice_map = {
+                                    "lily": "F2"
+                                }
+                                mapped_voice_name = voice_map.get(voice_name.lower(), voice_name)
+                                try:
+                                    voice_style = tts.get_voice_style(mapped_voice_name)
+                                except Exception as e:
+                                    print(f"[TTS] Ошибка получения стиля голоса {voice_name}: {e}. Используем F2 (Lily).")
+                                    voice_style = tts.get_voice_style("F2")
+
+                                print(f"[TTS] Синтез: {text[:50]}...")
+                                wav, duration = tts.synthesize(
+                                    text=text,
+                                    voice_style=voice_style,
+                                    lang="ru",
+                                    total_steps=total_steps,
+                                    speed=speed
+                                )
+                                duration = float(duration[0]) if hasattr(duration, "__len__") else float(duration)
+                                
+                                # Применяем громкость
+                                if volume != 1.0:
+                                    wav = wav * volume
+                                
+                                # 2. Переключаем анимацию в speaking строго перед воспроизведением
+                                _send_ws({"type": "state", "value": "speaking"})
+
+                                # Воспроизводим аудио
+                                sd.play(wav.T, samplerate=tts.sample_rate)
+                                
+                                # Ожидание конца воспроизведения с поддержкой прерывания
+                                start_time = time.time()
+                                interrupted = False
+                                while time.time() - start_time < duration:
+                                    if not _tts_queue.empty():
+                                        try:
+                                            next_cmd = _tts_queue.get_nowait()
+                                            next_action = next_cmd.get('cmd')
+                                            if next_action == 'stop':
+                                                sd.stop()
+                                                interrupted = True
+                                                break
+                                            elif next_action == 'quit':
+                                                sd.stop()
+                                                return
+                                            else:
+                                                _tts_queue.put(next_cmd)
+                                        except queue.Empty:
+                                            pass
+                                    time.sleep(0.02)
+                                
+                                if not interrupted:
+                                    sd.wait()
+                            except Exception as e:
+                                print(f"[TTS] Ошибка генерации/воспроизведения: {e}")
+                            finally:
+                                _send_ws({"type": "state", "value": "listening"})
+                                
                     elif action == 'stop':
                         try:
-                            engine.stop()
+                            sd.stop()
                         except Exception:
                             pass
                     elif action == 'quit':
                         try:
-                            engine.endLoop()
+                            sd.stop()
                         except Exception:
                             pass
-                        return  # Нормальное завершение
-
-                # Один тик цикла движка
-                try:
-                    engine.iterate()
-                except Exception as e:
-                    print(f"[TTS] Ошибка в цикле: {e}")
+                        return
         except Exception as e:
             retry_count += 1
             print(f"[TTS] Критическая ошибка TTS потока (попытка {retry_count}/{max_retries}): {e}")
@@ -638,7 +645,7 @@ def _tts_worker():
                 print("[TTS] ФАТАЛЬНО: TTS поток остановлен после множественных сбоев")
                 print("[TTS] Агент продолжит работу, но озвучивание недоступно")
                 break
-            time.sleep(1)  # Пауза перед повторной попыткой
+            time.sleep(2)
 
 # Запускаем фоновый поток TTS один раз
 _tts_thread = threading.Thread(target=_tts_worker, daemon=True)
@@ -779,6 +786,7 @@ def autonomous_speak(text: str):
     speak(text)
 
 set_speak_callback(autonomous_speak)
+set_timer_ws_callback(_send_ws)
 set_last_search_urls_ref(LAST_SEARCH_URLS)
 set_reminder_shutdown_event(_shutdown_event)  # Передаём event для graceful shutdown
 start_scheduler()
@@ -788,8 +796,7 @@ DATA_DIR = get_data_dir()
 DATA_DIR.mkdir(exist_ok=True)
 
 audit_logger = get_audit_logger(DATA_DIR / "audit" / "actions.jsonl")
-plugin_manager = PluginManager(DATA_DIR, cfg, _send_ws, audit_logger)
-plugin_manager.start()
+
 
 memory_manager = MemoryManager(DATA_DIR / "MEMORY.md")
 
@@ -978,6 +985,7 @@ def _command_worker():
             target_cmd = cmd.strip().lower()
             if _is_activation(target_cmd) or target_cmd in ("стоп", "хватит", "отключи", "выключи", "удали таймер", "выключи таймер", "отключи таймер"):
                 stop_timer_ring()
+                _send_ws({"type": "timer_done"})
                 _send_ws({"type": "text", "value": "Таймер отключён."})
                 _emit_task_status(task_id, "completed")
                 _send_ws({"type": "state", "value": "idle"})
@@ -1020,50 +1028,7 @@ def _command_worker():
 # Маршрутизация команд (атомарная, без планирования)
 
 
-def _try_direct_plugin_shortcut(
-    text: str,
-    source: str,
-    task_id: Optional[str],
-    is_background: bool,
-) -> Optional[str]:
-    lowered = (text or "").strip().lower()
 
-    # Fast path: duplicate scan in Downloads.
-    if ("дубликат" in lowered or "duplicate" in lowered) and plugin_manager.is_plugin_tool("find_file_duplicates_by_hash"):
-        args: Dict[str, Any] = {"recursive": True, "min_size_kb": 1, "max_groups": 12}
-        if "загруз" in lowered or "download" in lowered:
-            args["root_path"] = os.path.join(os.path.expanduser("~"), "Downloads")
-
-        _send_ws({"type": "tool_call", "name": "find_file_duplicates_by_hash", "args": args, "kind": "plugin"})
-        result = plugin_manager.invoke_tool("find_file_duplicates_by_hash", args, timeout_sec=_PER_TOOL_TIMEOUT_SEC)
-        if not result.get("ok"):
-            return f"Не удалось выполнить плагин поиска дубликатов: {result.get('error') or 'plugin_call_failed'}"
-
-        payload = result.get("result")
-        if not isinstance(payload, dict):
-            return f"Поиск дубликатов выполнен: {payload}"
-
-        if not payload.get("ok", True):
-            return f"Поиск дубликатов завершился ошибкой: {payload.get('error') or 'unknown_error'}"
-
-        folder = str(payload.get("folder") or "указанная папка")
-        groups = payload.get("groups") or []
-        if not isinstance(groups, list) or not groups:
-            return f"Готово. В папке {folder} дубликаты не найдены."
-
-        lines = [
-            f"Готово. Нашла {len(groups)} групп дубликатов в {folder}.",
-            f"Лишних копий: {payload.get('duplicate_files_without_original', 0)}.",
-        ]
-        for idx, group in enumerate(groups[:5], start=1):
-            files = group.get("files") or []
-            if not isinstance(files, list) or len(files) < 2:
-                continue
-            base = os.path.basename(str(files[0]))
-            lines.append(f"{idx}. {base} — копий: {len(files)}")
-        return "\n".join(lines)
-
-    return None
 
 
 def route_command_simple(
@@ -1081,14 +1046,7 @@ def route_command_simple(
     
 
 
-    shortcut_response = _try_direct_plugin_shortcut(
-        text=text,
-        source=source,
-        task_id=task_id,
-        is_background=is_background,
-    )
-    if shortcut_response:
-        return shortcut_response
+
 
     # Хардкодный обработчик для Telegram авторизации с номером (чтобы не терялся phone)
     tg_auth_match = re.search(r"(?:авторизуй|подключи)\s+(?:телеграм|телогу|телеге)\s+(?:по\s+номеру\s+)?([\+\d\s\-\(\)]+)", text, re.IGNORECASE)
@@ -1145,7 +1103,7 @@ def route_command_simple(
         if res is not None:
             return res
     
-    return ask_llm(text, source=source, task_id=task_id, bypass_confirmation=bypass_confirmation, is_background=is_background)
+    return ask_llm(text, source=source, task_id=task_id, bypass_confirmation=bypass_confirmation, is_background=is_background, file_name=file_name)
 
 
 def _web_search_for_presentation(query: str) -> str:
@@ -1330,6 +1288,7 @@ def ask_llm(
     bypass_confirmation: bool = False,
     is_background: bool = False,
     _tool_loop_depth: int = 0,
+    file_name: Optional[str] = None,
 ) -> str:
     if _is_simple_greeting(user_text):
         return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
@@ -1339,7 +1298,7 @@ def ask_llm(
     if allow_tools and _is_small_talk(user_text):
         allow_tools = False
 
-    if _should_use_web_search(user_text):
+    if _tool_loop_depth == 0 and not file_name and _should_use_web_search(user_text):
         try:
             _send_ws({"type": "tool_call", "name": "web_search", "args": {"query": user_text}})
             return web_search_answer(user_text, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS)
@@ -1383,12 +1342,10 @@ def ask_llm(
 
     effective_allow_tools = allow_tools and not _is_plain_code_request(user_text)
     if effective_allow_tools:
-        plugin_tool_defs = []
-        try:
-            plugin_tool_defs = plugin_manager.get_tool_definitions()
-        except Exception:
-            plugin_tool_defs = []
-        gen_args["tools"] = TOOL_DEFINITIONS + plugin_tool_defs
+        all_tools = TOOL_DEFINITIONS
+        if file_name or _tool_loop_depth > 0:
+            all_tools = [t for t in all_tools if t.get("function", {}).get("name") != "web_search"]
+        gen_args["tools"] = all_tools
         gen_args["tool_choice"] = "auto"
 
     use_stream = (source == 'chat')
@@ -1508,6 +1465,7 @@ def ask_llm(
                     bypass_confirmation=bypass_confirmation,
                     is_background=is_background,
                     tool_loop_depth=_tool_loop_depth,
+                    file_name=file_name,
                 )
 
         final_reply = full_response.strip()
@@ -1528,6 +1486,7 @@ def ask_llm(
             bypass_confirmation=bypass_confirmation,
             is_background=is_background,
             tool_loop_depth=_tool_loop_depth,
+            file_name=file_name,
         )
 
     reasoning_reply = (message.get("reasoning_content") or "").strip()
@@ -1592,6 +1551,7 @@ def _handle_tool_calls(
     bypass_confirmation: bool,
     is_background: bool,
     tool_loop_depth: int,
+    file_name: Optional[str] = None,
 ) -> str:
     """Обрабатывает один или несколько tool calls с bounded loop и policy gating."""
     if not tool_calls:
@@ -1623,11 +1583,7 @@ def _handle_tool_calls(
         except Exception:
             args = {}
 
-        is_plugin_candidate = False
-        try:
-            is_plugin_candidate = plugin_manager.is_plugin_tool(tool_name)
-        except Exception:
-            is_plugin_candidate = False
+
 
 
 
@@ -1640,11 +1596,20 @@ def _handle_tool_calls(
                 bypass_confirmation=True,
                 is_background=is_background,
                 _tool_loop_depth=tool_loop_depth + 1,
+                file_name=file_name,
             )
 
         if tool_name == "web_search":
+            if file_name:
+                tool_outputs.append("web_search: инструмент отключен, так как прикреплен файл.")
+                continue
             try:
-                query = str(args.get("query") or user_text).strip()
+                query = ""
+                if isinstance(args, dict):
+                    query = str(args.get("query") or "").strip()
+                if not query and tool_loop_depth == 0:
+                    query = user_text.strip()
+                
                 if not query:
                     tool_outputs.append("web_search: пустой поисковый запрос")
                 else:
@@ -1690,58 +1655,7 @@ def _handle_tool_calls(
                 )
             continue
 
-        if is_plugin_candidate:
-            try:
-                _send_ws({"type": "tool_call", "name": tool_name, "args": args, "kind": "plugin"})
-                resolved = plugin_manager.resolve_tool(tool_name, user_text=user_text) or {}
-                if task_id:
-                    _send_ws(
-                        {
-                            "type": "action_explain",
-                            "task_id": task_id,
-                            "action_key": f"tool.{tool_name}",
-                            "risk": decision.risk.label(),
-                            "explain": resolved.get("rationale") or f"Выбран plugin tool: {tool_name}",
-                        }
-                    )
-                result = plugin_manager.invoke_tool(tool_name, args, timeout_sec=_PER_TOOL_TIMEOUT_SEC)
-                if result.get("ok"):
-                    rendered_result = json.dumps(result.get("result"), ensure_ascii=False)
-                    tool_outputs.append(f"{tool_name}: {rendered_result}")
-                    had_successful_tool = True
-                    audit_logger.write_event(
-                        "tool.executed",
-                        {
-                            "task_id": task_id,
-                            "tool_name": tool_name,
-                            "status": "ok",
-                            "plugin_id": result.get("plugin_id"),
-                        },
-                    )
-                else:
-                    error_text = str(result.get("error") or "plugin_call_failed")
-                    error_line = f"{tool_name}: error {error_text}"
-                    tool_outputs.append(error_line)
-                    tool_errors.append(error_line)
-                    audit_logger.write_event(
-                        "tool.executed",
-                        {
-                            "task_id": task_id,
-                            "tool_name": tool_name,
-                            "status": "error",
-                            "plugin_id": result.get("plugin_id"),
-                            "error": error_text,
-                        },
-                    )
-            except Exception as e:
-                error_line = f"{tool_name}: error {e}"
-                tool_outputs.append(error_line)
-                tool_errors.append(error_line)
-                audit_logger.write_event(
-                    "tool.executed",
-                    {"task_id": task_id, "tool_name": tool_name, "status": "error", "error": str(e)},
-                )
-            continue
+
 
         error_line = f"{tool_name}: unknown tool"
         tool_outputs.append(error_line)

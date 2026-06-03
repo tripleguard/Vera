@@ -21,7 +21,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}/releases
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 LicenseFile=LICENSE
 OutputDir=build\installer
@@ -30,7 +30,7 @@ SetupIconFile=vera.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64
 ArchitecturesAllowed=x64
 UninstallDisplayIcon={app}\vera.ico
@@ -72,7 +72,6 @@ Source: "timer.mp3"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{localappdata}\{#MyAppName}\data"; Permissions: users-modify
 Name: "{localappdata}\{#MyAppName}\data\uploads"
 Name: "{localappdata}\{#MyAppName}\data\interpreter_tmp"
-Name: "{localappdata}\{#MyAppName}\data\plugins"
 
 ; ============================================================
 ;  Ярлыки
@@ -96,10 +95,12 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}
 
 ; ============================================================
 ;  Удаление
-; ============================================================
 [UninstallDelete]
-; Удаляем папку приложения, но НЕ данные пользователя в AppData
-Type: filesandordirs; Name: "{app}"
+; Удаляем все файлы в корневой папке приложения (включая скачанные llama-server.exe и gguf)
+Type: files; Name: "{app}\*"
+; Удаляем логи и кэш
+Type: filesandordirs; Name: "{localappdata}\{#MyAppName}\GPUCache"
+; Мы НЕ удаляем папку data (Type: filesandordirs; Name: "{app}" убрано, чтобы сохранить данные пользователя)
 
 ; ============================================================
 ;  Pascal Script — скачивание llama.cpp и модели

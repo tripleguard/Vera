@@ -49,9 +49,10 @@ DEFAULT_CONFIG = {
     "activation_word": "Вера",
     "silence_timeout": 2,
     "tts": {
-        "voice_index": 3,
-        "rate": 180,
+        "voice_name": "Lily",
+        "total_steps": 4,
         "volume": 0.8,
+        "speed": 1.15,
     },
     "commands": {},
     "sites": {
@@ -84,15 +85,7 @@ DEFAULT_CONFIG = {
         "performance_mode": "balanced",
         "animation_adaptive": True,
     },
-    "plugins": {
-        "enabled": True,
-        "trust_policy": "signed+sandbox",
-        "inbox_path": "",
-        "sandbox_defaults": {
-            "network": "restricted",
-            "filesystem": "scoped",
-        },
-    },
+
 }
 
 _DEFAULT_DATA_FILES = [

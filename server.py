@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Request, status
 import json
 import asyncio
 import argparse
@@ -18,56 +18,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
 
-def _run_plugin_host(plugin_dir: str, entrypoint: str) -> int:
-    """Runs plugin entrypoint in a dedicated process mode (same for source and frozen exe)."""
-    try:
-        plugin_root = Path(plugin_dir).resolve()
-    except Exception:
-        print(f"[PLUGIN_HOST] Invalid plugin_dir: {plugin_dir}")
-        return 2
 
-    if not plugin_root.exists() or not plugin_root.is_dir():
-        print(f"[PLUGIN_HOST] Plugin directory not found: {plugin_root}")
-        return 2
-
-    entry_rel = (entrypoint or "plugin_entry.py").strip() or "plugin_entry.py"
-    entry_path = (plugin_root / entry_rel).resolve()
-    if not entry_path.exists() or not entry_path.is_file():
-        print(f"[PLUGIN_HOST] Entrypoint not found: {entry_path}")
-        return 2
-
-    os.environ.setdefault("VERA_PLUGIN_DIR", str(plugin_root))
-    os.environ.setdefault("VERA_PLUGIN_ENTRYPOINT", str(entry_path))
-
-    sys.path.insert(0, str(plugin_root))
-    try:
-        runpy.run_path(str(entry_path), run_name="__main__")
-    except SystemExit as e:
-        try:
-            return int(e.code)
-        except Exception:
-            return 0
-    except Exception as e:
-        print(f"[PLUGIN_HOST] Crash: {e}")
-        return 1
-    return 0
-
-
-def _maybe_run_plugin_host_mode() -> None:
-    if "--plugin-host" not in sys.argv:
-        return
-
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--plugin-host", action="store_true")
-    parser.add_argument("--plugin-dir", required=False, default="")
-    parser.add_argument("--entrypoint", required=False, default="plugin_entry.py")
-    args, _ = parser.parse_known_args()
-
-    code = _run_plugin_host(args.plugin_dir, args.entrypoint)
-    raise SystemExit(code)
-
-
-_maybe_run_plugin_host_mode()
 
 class ConnectionManager:
     def __init__(self):
@@ -90,21 +41,23 @@ class ConnectionManager:
 from main.agent import (
     _ws_out_queue,
     queue_command,
-    list_plugins_state,
-    set_plugin_enabled,
-    uninstall_plugin,
 )
 
 manager = ConnectionManager()
 
 async def ws_broadcaster():
-    """Фоновая задача FastAPI для рассылки сообщений из очереди всем клиентам"""
+    """Фоновая задача FastAPI для рассылки сообщений из очереди всем клиентам без active polling"""
+    loop = asyncio.get_running_loop()
     while True:
         try:
-            msg = _ws_out_queue.get_nowait()
+            # Выполняем блокирующее чтение очереди в отдельном системном потоке, чтобы не блокировать event loop
+            msg = await loop.run_in_executor(None, _ws_out_queue.get)
             await manager.broadcast(msg)
-        except queue.Empty:
-            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[SERVER] Ошибка ws_broadcaster: {e}")
+            await asyncio.sleep(0.5)
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -122,13 +75,50 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# CORS configuration: allow local development origins and null (for file:// protocol)
+allow_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For Vite dev server and built frontend
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+VERA_API_TOKEN = os.environ.get("VERA_API_TOKEN", "")
+
+def verify_token(token: str | None) -> bool:
+    if not VERA_API_TOKEN:
+        return True  # В небезопасном режиме (запуск напрямую), если токен не задан
+    return token == VERA_API_TOKEN
+
+@app.middleware("http")
+async def verify_auth_token(request: Request, call_next):
+    # Пропускаем запросы OPTIONS preflight
+    if request.method == "OPTIONS":
+        return await call_next(request)
+        
+    if VERA_API_TOKEN:
+        token = None
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        else:
+            token = request.headers.get("X-Vera-Token")
+            
+        if not verify_token(token):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Unauthorized: Invalid or missing API token."}
+            )
+            
+    return await call_next(request)
 
 @app.get("/api/config")
 async def get_config_api():
@@ -207,43 +197,16 @@ async def save_heartbeat_tasks_api(request: Request):
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
-@app.get("/api/plugins")
-async def get_plugins_api():
-    return JSONResponse(content=list_plugins_state())
 
-
-@app.post("/api/plugins/toggle")
-async def toggle_plugin_api(request: Request):
-    try:
-        payload = await request.json()
-        plugin_id = str(payload.get("plugin_id") or "").strip()
-        enabled = bool(payload.get("enabled", False))
-        if not plugin_id:
-            return JSONResponse(content={"error": "plugin_id is required"}, status_code=400)
-        ok = set_plugin_enabled(plugin_id, enabled)
-        if not ok:
-            return JSONResponse(content={"error": "plugin not found"}, status_code=404)
-        return JSONResponse(content={"status": "ok"})
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
-
-@app.post("/api/plugins/uninstall")
-async def uninstall_plugin_api(request: Request):
-    try:
-        payload = await request.json()
-        plugin_id = str(payload.get("plugin_id") or "").strip()
-        if not plugin_id:
-            return JSONResponse(content={"error": "plugin_id is required"}, status_code=400)
-        ok = uninstall_plugin(plugin_id)
-        if not ok:
-            return JSONResponse(content={"error": "plugin not found"}, status_code=404)
-        return JSONResponse(content={"status": "ok"})
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: str = None):
+    if VERA_API_TOKEN:
+        if not token or token != VERA_API_TOKEN:
+            await websocket.accept()
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid API token")
+            return
+            
     await manager.connect(websocket)
     try:
         while True:
@@ -314,8 +277,17 @@ def _free_port(port: int):
 
 def start_server():
     print("[SERVER] Запуск FastAPI сервера на ws://127.0.0.1:8000/ws")
-    _free_port(8000)
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+    try:
+        _free_port(8000)
+    except Exception as e:
+        print(f"[SERVER] Ошибка освобождения порта 8000: {e}")
+        
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+    except Exception as e:
+        print(f"[CRITICAL] Не удалось запустить сервер на порту 8000: {e}")
+        print("Пожалуйста, убедитесь, что порт 8000 свободен от других приложений.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     # Запускаем оригинальный цикл агента в отдельном потоке

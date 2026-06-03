@@ -10,7 +10,7 @@
     "build:renderer": "tsc && vite build",
     "build:app": "npm run build:renderer && electron-builder --win dir",
     "electron:start": "node start.js",
-    "start": "concurrently \"npm run dev\" \"wait-on tcp:5173 && npm run electron:start\""
+    "start": "concurrently -k -s first \"npm run dev\" \"wait-on tcp:5173 && npm run electron:start\""
   },
   "build": {
     "appId": "ru.agentvera.desktop",

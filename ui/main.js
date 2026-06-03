@@ -2,11 +2,15 @@ const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
+const crypto = require('crypto');
 
 let widgetWindow;
 let chatWindow;
 let pythonProcess = null;
 let tray = null;
+
+const apiToken = crypto.randomBytes(32).toString('hex');
+
 
 let isQuitting = false;
 let backendRestartTimer = null;
@@ -154,6 +158,7 @@ function startPythonBackend() {
             ...process.env,
             PYTHONIOENCODING: 'utf-8',
             VERA_INSTALL_ROOT: backendRootPath,
+            VERA_API_TOKEN: apiToken,
         },
     });
 
@@ -240,8 +245,15 @@ function createWindows() {
     chatWindow.center();
     chatWindow.on('close', (e) => {
         if (!isQuitting) {
-            e.preventDefault();
-            chatWindow.hide();
+            isQuitting = true;
+            app.quit();
+        }
+    });
+
+    widgetWindow.on('close', () => {
+        if (!isQuitting) {
+            isQuitting = true;
+            app.quit();
         }
     });
 
@@ -298,6 +310,11 @@ if (!gotSingleInstanceLock) {
         startPythonBackend();
         createWindows();
         setupTrayIcon();
+
+        ipcMain.handle('get-api-token', () => apiToken);
+        ipcMain.on('get-api-token-sync', (event) => {
+            event.returnValue = apiToken;
+        });
 
         let toggleLock = false;
         ipcMain.on('toggle-chat', () => {

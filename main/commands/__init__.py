@@ -39,6 +39,7 @@ from .time_commands import (
     execute_reminder_command,
     execute_list_reminders_command,
     set_speak_callback,
+    set_ws_callback as set_timer_ws_callback,
     stop_timer_ring,
     is_timer_ringing,
     set_shutdown_event as set_reminder_shutdown_event,
@@ -65,12 +66,19 @@ from .sound_media import (
     execute_sound_media_command,
 )
 
+from .help_commands import (
+    execute_help_command,
+)
+
 
 # set_last_search_urls_ref экспортируется из web_commands
 # set_speak_callback экспортируется из time_commands
 
 # Список всех обработчиков команд в порядке приоритета
 HANDLERS = (
+    # Помощь и список команд (наивысший приоритет)
+    execute_help_command,
+
     # Управление окнами
     execute_window_command,
     
@@ -123,6 +131,7 @@ __all__ = [
     'HANDLERS',
     'set_last_search_urls_ref',
     'set_speak_callback',
+    'set_timer_ws_callback',
     'stop_timer_ring',
     'is_timer_ringing',
     'find_file',

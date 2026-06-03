@@ -59,9 +59,7 @@ hidden_imports = [
     'sherpa_onnx',
 
     # TTS
-    'pyttsx3',
-    'pyttsx3.drivers',
-    'pyttsx3.drivers.sapi5',
+    'supertonic',
 
     # Audio
     'sounddevice',
@@ -152,11 +150,6 @@ hidden_imports = [
     'main.tools.read_document',
     'main.tools.telegram',
     'main.tools.telegram_mode',
-    'main.plugins',
-    'main.plugins.manager',
-    'main.plugins.manifest',
-    'main.plugins.mcp_runtime',
-    'main.plugins.registry',
     'web',
     'web.web_search',
     'web.web_utils',

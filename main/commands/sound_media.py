@@ -31,6 +31,7 @@ def execute_sound_media_command(text: str) -> Optional[str]:
         r"\bиграй\b",
         r"\bвключи\s*музыку\b",
         r"\bвыключи\s*музыку\b",
+        r"\bверни\s*музыку\b",
         r"\bпл[еэ]й\b",
     ]
     
