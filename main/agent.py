@@ -810,13 +810,13 @@ def execute_memory_command(text: str) -> Optional[str]:
     
     # Команда "запомни"
     if lowered.startswith("запомни"):
-        profile_key, value = extract_from_remember_command(text)
+        profile_key, value, category = extract_from_remember_command(text)
         if value:
             if profile_key:
                 memory_manager.set_profile(profile_key, value)
                 return f"Запомнила: {profile_key} — {value}."
             else:
-                memory_manager.add_fact(value)
+                memory_manager.add_fact(value, category=category)
                 return f"Запомнила: {value}."
         return "Что запомнить? Уточните."
     
@@ -929,13 +929,13 @@ def _handle_user_command(
     if should_extract_facts(text):
         try:
             facts = extract_facts(text)
-            for profile_key, value in facts:
+            for profile_key, value, category in facts:
                 if profile_key:
                     memory_manager.set_profile(profile_key, value)
                     print(f"[MEMORY] Запомнила: {profile_key} = {value}")
                 else:
-                    memory_manager.add_fact(value)
-                    print(f"[MEMORY] Новый факт: {value}")
+                    memory_manager.add_fact(value, category=category)
+                    print(f"[MEMORY] Новый факт: {value} (категория: {category or 'auto'})")
         except Exception as e:
             print(f"[MEMORY] Ошибка извлечения фактов: {e}")
     
