@@ -1,7 +1,7 @@
 import re
 from typing import Optional
-import requests
 
+from web.http_client import http as requests
 from web.web_utils import get_default_headers, fetch_url, search_brave
 
 

@@ -2,7 +2,8 @@ import re
 import json
 from typing import Optional
 from datetime import datetime
-import requests
+
+from web.http_client import http as requests
 from web.web_utils import get_default_headers
 
 # Импортируем функцию для форматирования дат для TTS

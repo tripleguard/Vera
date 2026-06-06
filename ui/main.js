@@ -17,6 +17,7 @@ let backendRestartTimer = null;
 let backendRestartAttempts = 0;
 let backendStartedAt = 0;
 let lastNetworkIssueAt = 0;
+let isManualBackendRestart = false;
 const MAX_BACKEND_RESTARTS = 5;
 const NETWORK_ISSUE_COOLDOWN_MS = 30000;
 
@@ -38,6 +39,19 @@ function broadcastBackendStatus(payload) {
         if (win && !win.isDestroyed()) {
             win.webContents.send('backend-status', payload);
         }
+    }
+}
+
+function broadcastTheme(themeId, excludeSender = null) {
+    const windows = [chatWindow, widgetWindow];
+    for (const win of windows) {
+        if (!win || win.isDestroyed()) {
+            continue;
+        }
+        if (excludeSender && win.webContents === excludeSender) {
+            continue;
+        }
+        win.webContents.send('theme-changed', themeId);
     }
 }
 
@@ -82,6 +96,18 @@ function stopPythonBackend() {
         killProcessTree(pythonProcess.pid);
     }
     pythonProcess = null;
+}
+
+function restartPythonBackendNow() {
+    backendRestartAttempts = 0;
+    isManualBackendRestart = true;
+    stopPythonBackend();
+    setTimeout(() => {
+        isManualBackendRestart = false;
+        if (!isQuitting) {
+            startPythonBackend();
+        }
+    }, 600);
 }
 
 function scheduleBackendRestart() {
@@ -199,6 +225,9 @@ function startPythonBackend() {
             backendRestartAttempts = 0;
         }
         pythonProcess = null;
+        if (isManualBackendRestart) {
+            return;
+        }
         if (!isQuitting) {
             scheduleBackendRestart();
         }
@@ -217,6 +246,7 @@ function createWindows() {
         x: width - 100,
         y: 100,
         transparent: true,
+        backgroundColor: '#00000000',
         frame: false,
         hasShadow: false,
         alwaysOnTop: true,
@@ -235,6 +265,7 @@ function createWindows() {
         show: false,
         frame: false,
         transparent: true,
+        backgroundColor: '#00000000',
         icon: iconPath,
         webPreferences: {
             nodeIntegration: true,
@@ -349,10 +380,27 @@ if (!gotSingleInstanceLock) {
         });
 
         ipcMain.on('restart-app', () => {
+            if (!app.isPackaged) {
+                restartPythonBackendNow();
+                setTimeout(() => {
+                    if (chatWindow && !chatWindow.isDestroyed()) {
+                        chatWindow.webContents.reloadIgnoringCache();
+                    }
+                    if (widgetWindow && !widgetWindow.isDestroyed()) {
+                        widgetWindow.webContents.reloadIgnoringCache();
+                    }
+                }, 900);
+                return;
+            }
+
             isQuitting = true;
             stopPythonBackend();
             app.relaunch();
             app.exit(0);
+        });
+
+        ipcMain.on('theme-updated', (event, themeId) => {
+            broadcastTheme(themeId, event.sender);
         });
     });
 }

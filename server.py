@@ -183,16 +183,125 @@ async def get_heartbeat_tasks_api():
 @app.post("/api/heartbeat-tasks")
 async def save_heartbeat_tasks_api(request: Request):
     """Сохраняет список периодических задач."""
-    import time
     tasks_file = get_data_dir() / "heartbeat_tasks.json"
     
     try:
         payload = await request.json()
         tasks = payload if isinstance(payload, list) else payload.get("tasks", [])
-        # Для гарантии hot-reload обновим время изменения файла гарантированно больше предыдущего
-        time.sleep(0.1) 
         tasks_file.write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+        now = time.time() + 0.2
+        os.utime(tasks_file, (now, now))
         return JSONResponse(content={"status": "success", "message": "Задачи успешно обновлены."})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.get("/api/memory")
+async def get_memory_api():
+    """Возвращает структурированную память для UI-панели."""
+    try:
+        from main.agent import memory_manager
+        from user.memory import CATEGORIES
+
+        facts = sorted(
+            [dict(f) for f in memory_manager.facts],
+            key=lambda f: (not bool(f.get("pinned")), -float(f.get("timestamp") or 0)),
+        )
+        return JSONResponse(content={
+            "profile": dict(memory_manager.profile),
+            "facts": facts,
+            "categories": list(CATEGORIES),
+        })
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.patch("/api/memory/profile/{profile_key}")
+async def update_memory_profile_api(profile_key: str, payload: dict):
+    """Обновляет одно поле профиля памяти."""
+    try:
+        from main.agent import memory_manager
+
+        key = str(profile_key or "").strip().lower()
+        value = str(payload.get("value") or "").strip()
+        if not key:
+            return JSONResponse(content={"error": "Invalid profile key"}, status_code=400)
+        if not value:
+            return JSONResponse(content={"error": "Value cannot be empty"}, status_code=400)
+
+        memory_manager.set_profile(key, value)
+        return JSONResponse(content={"status": "success", "key": key, "value": value})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/memory/profile/{profile_key}")
+async def delete_memory_profile_api(profile_key: str):
+    """Удаляет одно поле профиля памяти."""
+    try:
+        from main.agent import memory_manager
+
+        key = str(profile_key or "").strip().lower()
+        if not key:
+            return JSONResponse(content={"error": "Invalid profile key"}, status_code=400)
+        if key not in memory_manager.profile:
+            return JSONResponse(content={"error": "Profile field not found"}, status_code=404)
+
+        del memory_manager.profile[key]
+        memory_manager.save()
+        return JSONResponse(content={"status": "success"})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.patch("/api/memory/facts/{fact_id}")
+async def update_memory_fact_api(fact_id: str, payload: dict):
+    """Обновляет pin/category/text для одного факта."""
+    try:
+        from main.agent import memory_manager
+        from user.memory import CATEGORIES
+
+        fact = None
+        for item in memory_manager.facts:
+            if item.get("id") == fact_id:
+                fact = item
+                break
+        if fact is None:
+            return JSONResponse(content={"error": "Fact not found"}, status_code=404)
+
+        if "pinned" in payload:
+            fact["pinned"] = bool(payload.get("pinned"))
+        if "category" in payload:
+            category = str(payload.get("category") or "fact")
+            if category not in CATEGORIES:
+                return JSONResponse(content={"error": "Invalid category"}, status_code=400)
+            fact["category"] = category
+        if "text" in payload:
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                return JSONResponse(content={"error": "Text cannot be empty"}, status_code=400)
+            fact["text"] = text
+
+        memory_manager._bm25_dirty = True
+        memory_manager.save()
+        return JSONResponse(content={"status": "success", "fact": dict(fact)})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/memory/facts/{fact_id}")
+async def delete_memory_fact_api(fact_id: str):
+    """Удаляет факт по id."""
+    try:
+        from main.agent import memory_manager
+
+        before = len(memory_manager.facts)
+        memory_manager.facts = [f for f in memory_manager.facts if f.get("id") != fact_id]
+        if len(memory_manager.facts) == before:
+            return JSONResponse(content={"error": "Fact not found"}, status_code=404)
+        memory_manager._bm25_dirty = True
+        memory_manager.save()
+        return JSONResponse(content={"status": "success"})
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 

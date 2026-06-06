@@ -99,7 +99,7 @@ TOOL_DEFINITIONS = [
                     },
                     "contact": {
                         "type": "string",
-                        "description": "Имя контакта (в именительном падеже: Андрей, не Андрею)"
+                        "description": "Имя контакта в именительном падеже, без склонения"
                     },
                     "message": {
                         "type": "string",

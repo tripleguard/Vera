@@ -157,7 +157,7 @@ class MemoryManager:
             {"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
             for m in raw_dialog
             if isinstance(m, dict)
-        ]
+        ][-MAX_DIALOG_MESSAGES:]
         self._bm25_dirty = True
 
     def _normalize_fact(self, f: Dict[str, Any]) -> Dict[str, Any]:
@@ -285,9 +285,9 @@ class MemoryManager:
             "timestamp": time.time(),
             "source": "user",
         })
+        self.facts.append(new_fact)
         # Ограничиваем количество фактов (выбрасываем самые старые не-pinned)
         self._enforce_fact_limit()
-        self.facts.append(new_fact)
         self._bm25_dirty = True
         self.save()
 
@@ -304,8 +304,8 @@ class MemoryManager:
         text = norm["text"]
         if any(self._fact_text(f).lower() == text.lower() for f in self.facts):
             return None
-        self._enforce_fact_limit()
         self.facts.append(norm)
+        self._enforce_fact_limit()
         self._bm25_dirty = True
         self.save()
         return norm["id"]
@@ -356,17 +356,17 @@ class MemoryManager:
     def _enforce_fact_limit(self) -> None:
         """Выбрасывает самые старые не-pinned факты сверх лимита.
 
-        Вызывать ПЕРЕД добавлением нового факта. Оставляет место для ещё одного
-        (MAX_FACTS - 1 не-pinned), чтобы после append() не превысить лимит.
+        Закрепленные факты всегда сохраняются. Если pinned уже больше лимита,
+        удалять их нельзя, поэтому лимит применяется только к обычным фактам.
         """
-        if len(self.facts) < MAX_FACTS:
+        if len(self.facts) <= MAX_FACTS:
             return
         not_pinned = [f for f in self.facts if not f.get("pinned")]
         pinned = [f for f in self.facts if f.get("pinned")]
         not_pinned.sort(key=lambda f: f.get("timestamp", 0))
-        # Оставляем MAX_FACTS - 1 - |pinned| не-pinned, чтобы после append() было ровно MAX_FACTS.
-        keep_n = max(0, MAX_FACTS - 1 - len(pinned))
-        not_pinned = not_pinned[:keep_n]
+        # Оставляем самые свежие обычные факты; старые вытесняются первыми.
+        keep_n = max(0, MAX_FACTS - len(pinned))
+        not_pinned = not_pinned[-keep_n:] if keep_n else []
         self.facts = not_pinned + pinned
 
     @staticmethod

@@ -2,6 +2,642 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+    --vera-bg: #101114;
+    --vera-bg-soft: #151922;
+    --vera-panel: rgba(20, 24, 32, 0.92);
+    --vera-panel-strong: rgba(24, 30, 40, 0.96);
+    --vera-widget-surface: #181e28;
+    --vera-panel-muted: rgba(255, 255, 255, 0.055);
+    --vera-border: rgba(255, 255, 255, 0.12);
+    --vera-border-strong: rgba(255, 255, 255, 0.2);
+    --vera-text: #f4f7fb;
+    --vera-muted: rgba(244, 247, 251, 0.62);
+    --vera-faint: rgba(244, 247, 251, 0.34);
+    --vera-accent: #67d4ff;
+    --vera-accent-2: #f6c76e;
+    --vera-user: rgba(103, 212, 255, 0.16);
+    --vera-assistant: rgba(255, 255, 255, 0.065);
+    --vera-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-vera-theme="daylight"] {
+    --vera-bg: #eef2f7;
+    --vera-bg-soft: #f7f8fb;
+    --vera-panel: rgba(255, 255, 255, 0.92);
+    --vera-panel-strong: rgba(255, 255, 255, 0.98);
+    --vera-widget-surface: #ffffff;
+    --vera-panel-muted: rgba(15, 23, 42, 0.045);
+    --vera-border: rgba(15, 23, 42, 0.12);
+    --vera-border-strong: rgba(37, 99, 235, 0.28);
+    --vera-text: #172033;
+    --vera-muted: rgba(23, 32, 51, 0.62);
+    --vera-faint: rgba(23, 32, 51, 0.36);
+    --vera-accent: #2563eb;
+    --vera-accent-2: #10b981;
+    --vera-user: rgba(37, 99, 235, 0.12);
+    --vera-assistant: rgba(255, 255, 255, 0.88);
+    --vera-shadow: 0 24px 80px rgba(31, 41, 55, 0.16);
+}
+
+:root[data-vera-theme="odyssey"] {
+    --vera-bg: #0e1020;
+    --vera-bg-soft: #151936;
+    --vera-panel: rgba(20, 25, 54, 0.9);
+    --vera-panel-strong: rgba(26, 34, 72, 0.96);
+    --vera-widget-surface: #1a2248;
+    --vera-panel-muted: rgba(255, 92, 168, 0.075);
+    --vera-border: rgba(126, 167, 255, 0.18);
+    --vera-border-strong: rgba(255, 92, 168, 0.35);
+    --vera-text: #f5f7ff;
+    --vera-muted: rgba(245, 247, 255, 0.62);
+    --vera-faint: rgba(245, 247, 255, 0.34);
+    --vera-accent: #ff5ca8;
+    --vera-accent-2: #7ee7ff;
+    --vera-user: rgba(255, 92, 168, 0.16);
+    --vera-assistant: rgba(126, 167, 255, 0.08);
+    --vera-shadow: 0 24px 90px rgba(5, 6, 22, 0.58);
+}
+
+:root[data-vera-theme="terminal"] {
+    --vera-bg: #020403;
+    --vera-bg-soft: #07110c;
+    --vera-panel: rgba(4, 14, 9, 0.94);
+    --vera-panel-strong: rgba(7, 20, 13, 0.98);
+    --vera-widget-surface: #07140d;
+    --vera-panel-muted: rgba(68, 255, 138, 0.055);
+    --vera-border: rgba(68, 255, 138, 0.18);
+    --vera-border-strong: rgba(68, 255, 138, 0.35);
+    --vera-text: #d9ffe8;
+    --vera-muted: rgba(217, 255, 232, 0.58);
+    --vera-faint: rgba(217, 255, 232, 0.32);
+    --vera-accent: #44ff8a;
+    --vera-accent-2: #f5d06f;
+    --vera-user: rgba(68, 255, 138, 0.13);
+    --vera-assistant: rgba(217, 255, 232, 0.055);
+    --vera-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+
+:root[data-vera-theme="sakura"] {
+    --vera-bg: #fff1f6;
+    --vera-bg-soft: #fff7fa;
+    --vera-panel: rgba(255, 255, 255, 0.92);
+    --vera-panel-strong: rgba(255, 255, 255, 0.98);
+    --vera-widget-surface: #ffffff;
+    --vera-panel-muted: rgba(217, 70, 127, 0.06);
+    --vera-border: rgba(102, 43, 68, 0.13);
+    --vera-border-strong: rgba(217, 70, 127, 0.26);
+    --vera-text: #352632;
+    --vera-muted: rgba(53, 38, 50, 0.62);
+    --vera-faint: rgba(53, 38, 50, 0.36);
+    --vera-accent: #d9467f;
+    --vera-accent-2: #2aa6a1;
+    --vera-user: rgba(217, 70, 127, 0.12);
+    --vera-assistant: rgba(255, 255, 255, 0.86);
+    --vera-shadow: 0 24px 80px rgba(91, 37, 61, 0.15);
+}
+
+:root[data-vera-theme="graphite"] {
+    --vera-bg: #17191d;
+    --vera-bg-soft: #1e2329;
+    --vera-panel: rgba(31, 36, 43, 0.92);
+    --vera-panel-strong: rgba(35, 41, 49, 0.96);
+    --vera-widget-surface: #232931;
+    --vera-panel-muted: rgba(245, 159, 90, 0.07);
+    --vera-border: rgba(226, 232, 240, 0.13);
+    --vera-border-strong: rgba(245, 159, 90, 0.32);
+    --vera-text: #f3f4f6;
+    --vera-muted: rgba(243, 244, 246, 0.6);
+    --vera-faint: rgba(243, 244, 246, 0.34);
+    --vera-accent: #f59f5a;
+    --vera-accent-2: #8ecae6;
+    --vera-user: rgba(245, 159, 90, 0.15);
+    --vera-assistant: rgba(255, 255, 255, 0.06);
+    --vera-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+html,
+body,
+#root {
+    background: transparent;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    border-radius: 20px;
+}
+
+body {
+    color: var(--vera-text);
+}
+
+.vera-shell {
+    background: var(--vera-panel);
+    border-color: var(--vera-border);
+    border-radius: 18px;
+    color: var(--vera-text);
+    box-shadow: var(--vera-shadow);
+}
+
+.settings-overlay {
+    border-radius: inherit;
+    overflow: hidden;
+}
+
+.vera-widget {
+    background: var(--vera-widget-surface);
+    border-radius: 20px;
+    color: var(--vera-text);
+    box-shadow: none;
+}
+
+.vera-widget:hover {
+    background: var(--vera-widget-surface);
+}
+
+.vera-shell .drag-region {
+    background: color-mix(in srgb, var(--vera-panel-strong) 82%, transparent);
+    border-color: var(--vera-border);
+}
+
+.vera-shell form {
+    background: var(--vera-panel-strong);
+    border-color: var(--vera-border);
+}
+
+.vera-shell form:focus-within {
+    border-color: var(--vera-border-strong);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--vera-accent) 42%, transparent);
+}
+
+.message-bubble {
+    border-color: var(--vera-border) !important;
+}
+
+.message-bubble.role-user {
+    background: var(--vera-user) !important;
+    color: var(--vera-text) !important;
+}
+
+.message-bubble.role-assistant {
+    background: var(--vera-assistant) !important;
+    color: color-mix(in srgb, var(--vera-text) 92%, transparent) !important;
+}
+
+.message-bubble.role-system {
+    background: color-mix(in srgb, var(--vera-accent) 8%, transparent) !important;
+    color: var(--vera-muted) !important;
+}
+
+.source-chip-wrap {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.4rem;
+}
+
+.source-chip {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.5rem;
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-panel-muted) 80%, transparent);
+    padding: 0.45rem 0.55rem;
+    text-align: left;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.source-chip:hover {
+    border-color: var(--vera-border-strong);
+    background: color-mix(in srgb, var(--vera-accent) 10%, var(--vera-panel-muted));
+}
+
+.source-chip-index {
+    display: inline-flex;
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--vera-accent) 18%, transparent);
+    color: var(--vera-accent);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.source-chip-text {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.15;
+}
+
+.source-chip-domain,
+.source-chip-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.source-chip-domain {
+    color: var(--vera-text);
+    font-size: 0.74rem;
+    font-weight: 650;
+}
+
+.source-chip-path {
+    color: var(--vera-muted);
+    font-size: 0.66rem;
+}
+
+.source-chip-icon {
+    flex: 0 0 auto;
+    color: var(--vera-muted);
+}
+
+.vera-settings {
+    background: var(--vera-panel-strong);
+    border-color: var(--vera-border);
+    box-shadow: var(--vera-shadow);
+}
+
+.settings-header,
+.vera-settings > .border-t {
+    background: color-mix(in srgb, var(--vera-panel-muted) 70%, transparent);
+    border-color: var(--vera-border);
+}
+
+.settings-section-title {
+    margin-bottom: 1rem;
+    color: var(--vera-muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0;
+}
+
+.vera-settings section {
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-panel-muted) 52%, transparent);
+    padding: 1rem;
+}
+
+.settings-intro {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.settings-intro-card {
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-bg) 42%, transparent);
+    padding: 0.9rem 1rem;
+}
+
+.settings-intro-card strong {
+    display: block;
+    margin-top: 0.25rem;
+    color: var(--vera-text);
+    font-size: 0.95rem;
+}
+
+.settings-intro-label {
+    color: var(--vera-muted);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+}
+
+.settings-separator {
+    height: 1px;
+    width: 100%;
+    background: var(--vera-border);
+}
+
+.settings-add-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-accent) 10%, transparent);
+    color: var(--vera-accent);
+    padding: 0.38rem 0.65rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.settings-add-button:hover {
+    border-color: var(--vera-border-strong);
+    background: color-mix(in srgb, var(--vera-accent) 16%, transparent);
+}
+
+.theme-option {
+    min-height: 96px;
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-panel-muted) 72%, transparent);
+    padding: 0.75rem;
+    text-align: left;
+    transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.theme-option:hover,
+.theme-option.active {
+    border-color: var(--vera-border-strong);
+    background: color-mix(in srgb, var(--vera-accent) 11%, var(--vera-panel-muted));
+}
+
+.theme-option.active {
+    color: var(--vera-accent);
+}
+
+.vera-settings input,
+.vera-settings select {
+    background: color-mix(in srgb, var(--vera-bg) 58%, transparent) !important;
+    border-color: var(--vera-border) !important;
+    color: var(--vera-text) !important;
+}
+
+.vera-settings select,
+.memory-category-select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: none !important;
+    padding-right: 0.75rem;
+}
+
+.vera-settings input[type="number"]::-webkit-outer-spin-button,
+.vera-settings input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.vera-settings input[type="number"] {
+    -moz-appearance: textfield;
+}
+
+.vera-settings input:focus,
+.vera-settings select:focus {
+    border-color: var(--vera-border-strong) !important;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--vera-accent) 35%, transparent);
+}
+
+.vera-settings input[type="range"] {
+    accent-color: var(--vera-accent);
+}
+
+.memory-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 170px;
+    gap: 0.6rem;
+    margin-bottom: 0.8rem;
+}
+
+.memory-profile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 0.8rem;
+}
+
+.memory-profile-item {
+    min-width: 0;
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-bg) 36%, transparent);
+    padding: 0.55rem 0.65rem;
+}
+
+.memory-profile-item span,
+.memory-profile-item strong {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-profile-item span {
+    color: var(--vera-muted);
+    font-size: 0.68rem;
+}
+
+.memory-profile-item strong {
+    margin-top: 0.15rem;
+    color: var(--vera-text);
+    font-size: 0.86rem;
+}
+
+.memory-profile-edit-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.25rem;
+}
+
+.memory-profile-input {
+    min-width: 0;
+    flex: 1;
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-bg) 42%, transparent);
+    color: var(--vera-text);
+    padding: 0.45rem 0.6rem;
+    font-size: 0.86rem;
+}
+
+.memory-search {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-bg) 42%, transparent);
+    padding: 0 0.6rem;
+    color: var(--vera-muted);
+}
+
+.memory-category-select {
+    min-width: 0;
+    border-radius: 8px !important;
+}
+
+.memory-facts-list {
+    display: flex;
+    max-height: 280px;
+    flex-direction: column;
+    gap: 0.55rem;
+    overflow-y: auto;
+    padding-right: 0.15rem;
+}
+
+.memory-fact {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    border: 1px solid var(--vera-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-panel-muted) 70%, transparent);
+    padding: 0.75rem;
+}
+
+.memory-fact.pinned {
+    border-color: var(--vera-border-strong);
+    background: color-mix(in srgb, var(--vera-accent) 9%, var(--vera-panel-muted));
+}
+
+.memory-category,
+.memory-pinned,
+.memory-meta {
+    border-radius: 999px;
+    padding: 0.1rem 0.45rem;
+    font-size: 0.65rem;
+    line-height: 1.3;
+}
+
+.memory-category {
+    background: color-mix(in srgb, var(--vera-accent) 16%, transparent);
+    color: var(--vera-accent);
+    font-weight: 700;
+}
+
+.memory-pinned {
+    background: color-mix(in srgb, var(--vera-accent-2) 18%, transparent);
+    color: var(--vera-accent-2);
+}
+
+.memory-meta {
+    color: var(--vera-muted);
+    background: color-mix(in srgb, var(--vera-text) 6%, transparent);
+}
+
+.memory-icon-button {
+    display: inline-flex;
+    width: 1.9rem;
+    height: 1.9rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    color: var(--vera-muted);
+    transition: background 120ms ease, color 120ms ease;
+}
+
+.memory-icon-button:hover {
+    background: color-mix(in srgb, var(--vera-accent) 12%, transparent);
+    color: var(--vera-accent);
+}
+
+.memory-icon-button.danger:hover {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+}
+
+.memory-empty {
+    border: 1px dashed var(--vera-border);
+    border-radius: 8px;
+    padding: 1rem;
+    color: var(--vera-muted);
+    text-align: center;
+    font-size: 0.85rem;
+}
+
+.attachment-card {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    min-width: 0;
+    border: 1px solid var(--vera-border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--vera-panel-strong) 88%, transparent);
+    padding: 0.7rem 0.85rem;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+}
+
+.attachment-card.light {
+    background: rgba(255, 255, 255, 0.96);
+}
+
+.attachment-card-inline {
+    box-shadow: none;
+}
+
+.attachment-icon {
+    display: inline-flex;
+    width: 2.15rem;
+    height: 2.15rem;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--vera-accent) 16%, transparent);
+    color: var(--vera-accent);
+}
+
+.attachment-body {
+    min-width: 0;
+    flex: 1;
+}
+
+.attachment-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--vera-text);
+    font-size: 0.88rem;
+    font-weight: 700;
+}
+
+.attachment-meta-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.18rem;
+    color: var(--vera-muted);
+    font-size: 0.72rem;
+}
+
+.attachment-badge {
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--vera-accent) 12%, transparent);
+    color: var(--vera-accent);
+    padding: 0.12rem 0.45rem;
+    font-size: 0.64rem;
+    font-weight: 800;
+}
+
+.attachment-remove {
+    display: inline-flex;
+    width: 1.9rem;
+    height: 1.9rem;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    color: var(--vera-muted);
+    transition: background 120ms ease, color 120ms ease;
+}
+
+.attachment-remove:hover {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+}
+
+@media (max-width: 640px) {
+    .memory-toolbar {
+        grid-template-columns: 1fr;
+    }
+
+    .settings-intro {
+        grid-template-columns: 1fr;
+    }
+}
+
 .drag-region {
     -webkit-app-region: drag;
 }

@@ -2,12 +2,13 @@
 import re
 import random
 import time
-import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from typing import Optional, List, Tuple
 from urllib.parse import urlparse, quote_plus, parse_qs
+
+from web.http_client import http as requests
 
 
 def relevance_score(query: str, text: str) -> int:

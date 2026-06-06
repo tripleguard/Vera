@@ -4,8 +4,8 @@ import threading
 from collections import OrderedDict
 from urllib.parse import urlparse, quote_plus
 from typing import Optional
-import requests
 
+from web.http_client import http as requests
 from web.web_utils import get_default_headers, search_brave, relevance_score, domain_boost, fetch_urls_parallel
 
 _WEB_SUMMARY_PROMPT = (

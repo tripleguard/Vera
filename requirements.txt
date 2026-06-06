@@ -5,6 +5,7 @@ websockets
 fastapi
 psutil
 requests
+niquests
 beautifulsoup4
 pycaw
 comtypes
