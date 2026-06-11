@@ -22,10 +22,6 @@ TOOL_DEFINITIONS = [
                     "query": {
                         "type": "string",
                         "description": "Поисковый запрос"
-                    },
-                    "detailed": {
-                        "type": "boolean",
-                        "description": "Если True, вернет подробный развернутый ответ (обязательно используй True для сбора материала перед созданием документа)"
                     }
                 },
                 "required": ["query"]
@@ -191,3 +187,16 @@ TOOL_DEFINITIONS = [
         }
     },
 ]
+
+TOOL_DEFINITIONS_BY_NAME = {
+    item["function"]["name"]: item
+    for item in TOOL_DEFINITIONS
+}
+
+
+def get_tool_definitions(names):
+    return [
+        TOOL_DEFINITIONS_BY_NAME[name]
+        for name in names
+        if name in TOOL_DEFINITIONS_BY_NAME
+    ]

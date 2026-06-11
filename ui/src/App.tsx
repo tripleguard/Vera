@@ -1,17 +1,23 @@
 import { useEffect, useState, useRef, useCallback, useMemo, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Paperclip, X, Send, ExternalLink, FolderOpen, FileText, Mic, MicOff, Brain, ChevronDown, ChevronUp, Check, Pin, Trash2, Search, Database, Plus, Save } from 'lucide-react';
+import { Paperclip, X, ExternalLink, FolderOpen, FileText, FileStack, Mic, MicOff, Brain, ChevronDown, ChevronUp, ChevronRight, Check, Pin, Trash2, Search, Database, Plus, Save, PanelRight, PanelLeft, Palette, Cpu, Volume2, Globe2, Clock3, SlidersHorizontal, Minus, Maximize2, Minimize2, TerminalSquare, UploadCloud, Folder, File as FileIcon, RefreshCw, Boxes, Wrench } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { connectSocketWithReconnect } from './services/socketService';
+import { SessionPanelWindow } from './components/SessionPanelWindow';
+import {
+    createSession,
+    listSessions,
+    loadSessionMessages,
+} from './services/sessionService';
+import { ACTIVE_SESSION_EVENT, ACTIVE_SESSION_STORAGE_KEY, SESSIONS_REV_EVENT, SESSIONS_REV_STORAGE_KEY, bumpSessionsRevision, readActiveSessionId, writeActiveSessionId } from './services/sessionSync';
 
 import { Settings } from 'lucide-react';
 
-const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
-const shell = window.require ? window.require('electron').shell : null;
+const ipcRenderer = window.veraDesktop || null;
 
-const apiToken = ipcRenderer ? ipcRenderer.sendSync('get-api-token-sync') : '';
+const apiToken = ipcRenderer ? ipcRenderer.getApiToken() : '';
 
-type VeraThemeId = 'obsidian' | 'daylight' | 'odyssey' | 'terminal' | 'sakura' | 'graphite';
+type VeraThemeId = 'obsidian' | 'daylight' | 'terminal' | 'sakura' | 'graphite';
 
 const VERA_THEMES: Array<{
     id: VeraThemeId;
@@ -22,13 +28,57 @@ const VERA_THEMES: Array<{
 }> = [
         { id: 'obsidian', name: 'Обсидиан', description: 'Темное стекло', mode: 'dark', swatches: ['#101114', '#1c2430', '#67d4ff'] },
         { id: 'daylight', name: 'Дневной', description: 'Чистый фокус', mode: 'light', swatches: ['#f7f8fb', '#ffffff', '#2563eb'] },
-        { id: 'odyssey', name: 'Одиссея', description: 'Мягкий неон', mode: 'dark', swatches: ['#0e1020', '#19223b', '#ff5ca8'] },
         { id: 'terminal', name: 'Терминал', description: 'Минимум шума', mode: 'dark', swatches: ['#020403', '#07110c', '#44ff8a'] },
         { id: 'sakura', name: 'Сакура', description: 'Теплый свет', mode: 'light', swatches: ['#fff7fa', '#ffffff', '#d9467f'] },
         { id: 'graphite', name: 'Графит', description: 'Спокойная сталь', mode: 'dark', swatches: ['#17191d', '#22272e', '#f59f5a'] },
     ];
 
 const THEME_STORAGE_KEY = 'vera_theme';
+const RUNTIME_MODEL_STORAGE_KEY = 'vera_runtime_model_name';
+const WORKSPACE_DIRECTORY_STORAGE_KEY = 'vera_workspace_directory';
+const WORKSPACE_FILE_DRAG_TYPE = 'application/x-vera-workspace-file';
+
+type WorkspacePanelMode = 'files' | 'terminal';
+
+type WorkspaceEntry = {
+    name: string;
+    path: string;
+    isDirectory: boolean;
+    size: number;
+};
+
+type ProjectEntry = {
+    name: string;
+    path: string;
+    size: number;
+    updatedAt: number;
+};
+
+type SkillEntry = {
+    name: string;
+    title: string;
+    description: string;
+    allowed_tools: string[];
+    source: 'builtin' | 'user';
+    activation: string;
+    model_profile: string;
+};
+
+const TOOL_ACTIVITY_LABELS: Record<string, string> = {
+    web_search: 'Ищет в интернете',
+    create_presentation: 'Создаёт презентацию',
+    create_document: 'Создаёт документ',
+    code_interpreter: 'Выполняет код',
+    read_document: 'Читает документ',
+    telegram: 'Работает с Telegram',
+    open_app: 'Открывает приложение',
+    close_app: 'Закрывает приложение',
+    manage_files: 'Работает с файлами',
+};
+
+function getToolActivityLabel(toolName: string): string {
+    return TOOL_ACTIVITY_LABELS[toolName] || `Выполняет: ${toolName.replace(/_/g, ' ')}`;
+}
 
 function getThemeById(themeId: string | null | undefined) {
     return VERA_THEMES.find(theme => theme.id === themeId) || VERA_THEMES[0];
@@ -50,7 +100,7 @@ function parseMessage(text: string): { cleanText: string; sources: string[], doc
     let cleanText = text || '';
     let docPath: string | null = null;
 
-    const docPathRe = /(Презентация создана|Документ сохранен|Документ сохранён|Файл создан):\s*([A-Z]:\\[^\r\n]+)/i;
+    const docPathRe = /(Презентация создана|Документ сохранен|Документ сохранён|Файл создан):\s*([A-Z]:\\.*?\.(?:pptx|docx|xlsx|pdf|txt|md|csv|json))/i;
     const docMatch = docPathRe.exec(cleanText);
     if (docMatch) {
         docPath = docMatch[2].trim();
@@ -123,6 +173,27 @@ function getFileExtension(fileName: string | undefined): string {
     return parts[parts.length - 1].toUpperCase();
 }
 
+function getImageMimeType(fileName: string): string {
+    const extension = fileName.split('.').pop()?.toLowerCase();
+    const imageTypes: Record<string, string> = {
+        avif: 'image/avif',
+        bmp: 'image/bmp',
+        gif: 'image/gif',
+        heic: 'image/heic',
+        heif: 'image/heif',
+        jpeg: 'image/jpeg',
+        jpg: 'image/jpeg',
+        png: 'image/png',
+        svg: 'image/svg+xml',
+        webp: 'image/webp',
+    };
+    return extension ? imageTypes[extension] || '' : '';
+}
+
+function isImageFile(file: File): boolean {
+    return file.type.startsWith('image/') || Boolean(getImageMimeType(file.name));
+}
+
 function formatFileSize(bytes: number | undefined): string {
     if (!bytes || bytes <= 0) return '';
     if (bytes < 1024) return `${bytes} Б`;
@@ -190,23 +261,20 @@ function ThinkingBlock({ thoughts, isLightMode }: { thoughts: string, isLightMod
     if (!thoughts) return null;
 
     return (
-        <div className={`mb-4 rounded-xl border transition-all ${isLightMode ? 'bg-gray-50 border-gray-200' : 'bg-white/5 border-white/10'
-            }`}>
+        <div className="thinking-line">
             <button
                 onClick={(e) => {
                     e.stopPropagation();
                     setIsExpanded(!isExpanded);
                 }}
-                className="w-full flex items-center justify-between px-4 py-2 text-xs font-medium opacity-60 hover:opacity-100 transition-opacity"
+                className="thinking-line-toggle"
+                aria-expanded={isExpanded}
             >
-                <div className="flex items-center gap-2">
-                    <Brain size={14} className="text-purple-400" />
-                    <span>Размышления модели</span>
-                </div>
-                {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                <span>Думает</span>
+                {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
             </button>
             {isExpanded && (
-                <div className="px-4 pb-3 text-xs leading-relaxed opacity-70 whitespace-pre-wrap border-t border-white/5 pt-2 italic">
+                <div className={`thinking-line-content ${isLightMode ? 'light' : ''}`}>
                     {thoughts}
                 </div>
             )}
@@ -270,9 +338,9 @@ function AssistantMessageText({ text, isLightMode }: { text: string, isLightMode
                         <a
                             href={href}
                             onClick={(e) => {
-                                if (href && shell) {
+                                if (href && ipcRenderer) {
                                     e.preventDefault();
-                                    shell.openExternal(href);
+                                    void ipcRenderer.openExternal(href);
                                 }
                             }}
                             className={`underline underline-offset-2 ${isLightMode ? 'text-blue-700 hover:text-blue-800' : 'text-blue-300 hover:text-blue-200'}`}
@@ -311,11 +379,13 @@ function SettingsModal({
     onClose,
     currentThemeId,
     onThemeChange,
+    initialSection,
 }: {
     isOpen: boolean;
     onClose: () => void;
     currentThemeId: VeraThemeId;
     onThemeChange: (themeId: VeraThemeId) => void;
+    initialSection?: string;
 }) {
     const [config, setConfig] = useState<any>(null);
     const [tasks, setTasks] = useState<any[]>([]);
@@ -325,9 +395,29 @@ function SettingsModal({
     const [memoryCategory, setMemoryCategory] = useState('all');
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
+    const [activeSettingsSection, setActiveSettingsSection] = useState('appearance');
+
+    const settingsSections = [
+        { id: 'appearance', label: 'Оформление', icon: Palette },
+        { id: 'memory', label: 'Память', icon: Database },
+        { id: 'general', label: 'Общие', icon: SlidersHorizontal },
+        { id: 'model', label: 'Модель', icon: Cpu },
+        { id: 'voice', label: 'Голос', icon: Volume2 },
+        { id: 'web', label: 'Веб-поиск', icon: Globe2 },
+        { id: 'automation', label: 'Автоматизация', icon: Clock3 },
+    ];
+
+    const goToSettingsSection = (sectionId: string) => {
+        setActiveSettingsSection(sectionId);
+        document.getElementById(`settings-${sectionId}`)?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+        });
+    };
 
     useEffect(() => {
         if (isOpen) {
+            setActiveSettingsSection(initialSection || 'appearance');
             setMessage('');
             Promise.all([
                 veraFetch('http://127.0.0.1:8000/api/config').then(res => res.json()),
@@ -345,8 +435,13 @@ function SettingsModal({
                     setProfileDrafts(memoryData?.profile || {});
                 })
                 .catch(err => setMessage('Ошибка загрузки настроек: ' + err.message));
+            window.setTimeout(() => {
+                document.getElementById(`settings-${initialSection || 'appearance'}`)?.scrollIntoView({
+                    block: 'start',
+                });
+            }, 0);
         }
-    }, [isOpen]);
+    }, [initialSection, isOpen]);
 
     if (!isOpen) return null;
 
@@ -574,6 +669,15 @@ function SettingsModal({
     };
 
     const profileEntries = Object.entries(memory?.profile || {});
+    const ttsVolumePercent = Math.round(
+        Math.max(0, Math.min(100, Number(config?.tts?.volume ?? 50))),
+    );
+
+    const handleTtsVolumePercent = (value: number) => {
+        const percent = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
+        handleChange('tts', 'volume', Math.round(percent), 'number');
+        handleChange('tts', 'volume_scale', 'percent_v2', 'string');
+    };
 
 
 
@@ -583,7 +687,7 @@ function SettingsModal({
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="vera-settings w-full max-w-3xl max-h-[90vh] rounded-2xl border shadow-2xl flex flex-col overflow-hidden"
+                className="vera-settings w-full max-w-5xl max-h-[92vh] rounded-2xl border shadow-2xl flex flex-col overflow-hidden"
             >
                 {/* Header */}
                 <div className="settings-header flex items-center justify-between p-4 border-b no-drag-region">
@@ -596,8 +700,24 @@ function SettingsModal({
                     </button>
                 </div>
 
-                {/* Body (Scrollable fields) */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-8 no-drag-region">
+                <div className="settings-layout min-h-0 flex-1 no-drag-region">
+                    <aside className="settings-nav">
+                        <div className="settings-nav-label">Настройки Vera</div>
+                        {settingsSections.map(({ id, label, icon: Icon }) => (
+                            <button
+                                key={id}
+                                type="button"
+                                onClick={() => goToSettingsSection(id)}
+                                className={`settings-nav-item ${activeSettingsSection === id ? 'active' : ''}`}
+                            >
+                                <Icon size={16} />
+                                <span>{label}</span>
+                            </button>
+                        ))}
+                    </aside>
+
+                    {/* Body (Scrollable fields) */}
+                    <div className="settings-content flex-1 overflow-y-auto p-6 space-y-8">
                     {!config ? (
                         <div className="flex h-32 items-center justify-center opacity-50">
                             Загрузка...
@@ -618,7 +738,7 @@ function SettingsModal({
                                     <strong>{getVoiceDisplayName(config.tts?.voice_name)}</strong>
                                 </div>
                             </div>
-                            <section>
+                            <section id="settings-appearance" className="settings-anchor">
                                 <h3 className="settings-section-title">Оформление</h3>
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                                     {VERA_THEMES.map(theme => (
@@ -649,7 +769,7 @@ function SettingsModal({
 
                             <div className="settings-separator" />
 
-                            <section>
+                            <section id="settings-memory" className="settings-anchor">
                                 <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                                     <h3 className="settings-section-title mb-0 flex items-center gap-2">
                                         <Database size={14} />
@@ -758,7 +878,7 @@ function SettingsModal({
 
                             <div className="settings-separator" />
                             {/* General */}
-                            <section>
+                            <section id="settings-general" className="settings-anchor">
                                 <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest mb-4">Общие</h3>
                                 <div className="space-y-4">
                                     <div>
@@ -785,7 +905,7 @@ function SettingsModal({
                             <div className="h-px bg-white/5 w-full" />
 
                             {/* LLM Model */}
-                            <section>
+                            <section id="settings-model" className="settings-anchor">
                                 <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest mb-4">Модель (LLM)</h3>
                                 <div className="space-y-4">
                                     <div>
@@ -826,7 +946,7 @@ function SettingsModal({
                                                 <input
                                                     type="range"
                                                     min="0"
-                                                    max="4096"
+                                                    max="32768"
                                                     step="64"
                                                     value={Math.max(0, config.model?.reasoning_budget ?? 1024)}
                                                     onChange={e => handleChange('model', 'reasoning_budget', e.target.value, 'number')}
@@ -841,7 +961,10 @@ function SettingsModal({
                                                     className="w-24 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-white/30"
                                                 />
                                             </div>
-                                            <p className="text-[10px] opacity-40 mt-1">`-1` = без ограничений, `0` = без размышления</p>
+                                            <p className="text-[10px] opacity-40 mt-1">
+                                                До 32 768 токенов. `-1` = без отдельного лимита, `0` = без размышления.
+                                                Фактический предел зависит от контекста модели.
+                                            </p>
                                         </div>
 
                                         <div>
@@ -903,30 +1026,71 @@ function SettingsModal({
 
                             <div className="h-px bg-white/5 w-full" />
 
-                            <section>
-                                <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest mb-4">Озвучивание (TTS)</h3>
+                            <section id="settings-voice" className="settings-anchor">
+                                <h3 className="settings-section-title">Озвучивание</h3>
                                 <div className="space-y-4">
+                                    <div className="tts-volume-card">
+                                        <div className="tts-volume-header">
+                                            <div>
+                                                <strong>Громкость голоса</strong>
+                                                <span>Уровень озвучивания ответов Веры</span>
+                                            </div>
+                                            <div className="tts-volume-value">
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    max="100"
+                                                    step="1"
+                                                    value={ttsVolumePercent}
+                                                    onChange={e => handleTtsVolumePercent(Number(e.target.value))}
+                                                    aria-label="Громкость голоса в процентах"
+                                                />
+                                                <span>%</span>
+                                            </div>
+                                        </div>
+                                        <div className="tts-volume-slider-row">
+                                            <Volume2 size={18} />
+                                            <input
+                                                type="range"
+                                                min="0"
+                                                max="100"
+                                                step="1"
+                                                value={ttsVolumePercent}
+                                                onChange={e => handleTtsVolumePercent(Number(e.target.value))}
+                                                className="tts-volume-slider"
+                                                style={{ '--tts-volume': `${ttsVolumePercent}%` } as React.CSSProperties}
+                                            />
+                                        </div>
+                                        <div className="tts-volume-presets">
+                                            {[
+                                                { label: 'Тихо', value: 25 },
+                                                { label: 'Обычно', value: 50 },
+                                                { label: 'Громко', value: 70 },
+                                            ].map(preset => (
+                                                <button
+                                                    key={preset.value}
+                                                    type="button"
+                                                    onClick={() => handleTtsVolumePercent(preset.value)}
+                                                    className={Math.abs(ttsVolumePercent - preset.value) <= 2 ? 'active' : ''}
+                                                >
+                                                    {preset.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <p className="tts-volume-note">
+                                            Рекомендуемый уровень: 40–60%. Даже на 100% защита от перегруза остаётся включённой.
+                                        </p>
+                                    </div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label className="block text-sm opacity-80 mb-1">Скорость речи (speed)</label>
+                                            <label className="block text-sm opacity-80 mb-1">Скорость речи</label>
                                             <input
-                                                type="number" step="0.05"
+                                                type="number" min="0.5" max="2" step="0.05"
                                                 value={config.tts?.speed || 1.15}
                                                 onChange={e => handleChange('tts', 'speed', e.target.value, 'float')}
                                                 className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                             />
                                         </div>
-                                        <div>
-                                            <label className="block text-sm opacity-80 mb-1">Громкость (0.0 - 1.0)</label>
-                                            <input
-                                                type="number" step="0.1"
-                                                value={config.tts?.volume || 0.8}
-                                                onChange={e => handleChange('tts', 'volume', e.target.value, 'float')}
-                                                className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
-                                            />
-                                        </div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
                                         <div>
                                             <label className="block text-sm opacity-80 mb-1">Голос</label>
                                             <select
@@ -948,7 +1112,7 @@ function SettingsModal({
                                             </select>
                                         </div>
                                         <div>
-                                            <label className="block text-sm opacity-80 mb-1">Шаги синтеза (total_steps)</label>
+                                            <label className="block text-sm opacity-80 mb-1">Качество синтеза</label>
                                             <input
                                                 type="number" min="1" max="10"
                                                 value={config.tts?.total_steps || 4}
@@ -963,7 +1127,7 @@ function SettingsModal({
                             <div className="h-px bg-white/5 w-full" />
 
                             {/* Web Search */}
-                            <section>
+                            <section id="settings-web" className="settings-anchor">
                                 <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest mb-4">Web Search</h3>
                                 <div className="space-y-4">
                                     <div>
@@ -1028,7 +1192,7 @@ function SettingsModal({
                             <div className="h-px bg-white/5 w-full" />
 
                             {/* Periodic Tasks */}
-                            <section>
+                            <section id="settings-automation" className="settings-anchor">
                                 <div className="flex items-center justify-between mb-4">
                                     <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest">Периодические задачи</h3>
                                     <button
@@ -1126,6 +1290,7 @@ function SettingsModal({
 
                         </div>
                     )}
+                    </div>
                 </div>
 
                 {/* Footer */}
@@ -1478,7 +1643,22 @@ interface Message {
     thoughts?: string;
     file?: string;
     fileSize?: number;
+    imagePreview?: string;
     streaming?: boolean;
+}
+
+interface LogEntry {
+    id: number;
+    time: string;
+    level: 'info' | 'success' | 'error';
+    text: string;
+    detail?: string;
+}
+
+interface RuntimeInfo {
+    version: string;
+    model_name: string;
+    model_path?: string;
 }
 
 function SourceChips({ sources }: { sources: string[] }) {
@@ -1489,7 +1669,7 @@ function SourceChips({ sources }: { sources: string[] }) {
             {sources.map((url, i) => (
                 <button
                     key={url}
-                    onClick={() => shell?.openExternal(url)}
+                    onClick={() => void ipcRenderer?.openExternal(url)}
                     className="source-chip"
                     title={url}
                     type="button"
@@ -1506,6 +1686,17 @@ function SourceChips({ sources }: { sources: string[] }) {
     );
 }
 
+function EmptyChatStage({ isLightMode }: { isLightMode: boolean }) {
+    return (
+        <div className={`chat-empty-stage ${isLightMode ? 'light' : ''}`}>
+            <div className="chat-empty-copy">
+                <h1>VERA AGENT</h1>
+                <p>Отправьте задачу, файл или идею. Vera будет работать с вашим компьютером и локальными инструментами.</p>
+            </div>
+        </div>
+    );
+}
+
 const MessageBubble = memo(function MessageBubble({
     msg,
     isLightMode,
@@ -1513,6 +1704,39 @@ const MessageBubble = memo(function MessageBubble({
     msg: Message;
     isLightMode: boolean;
 }) {
+    if (msg.role === 'user') {
+        return (
+            <div className="user-message-stack">
+                {msg.imagePreview && (
+                    <img
+                        src={msg.imagePreview}
+                        alt={msg.file || 'Прикреплённое изображение'}
+                        className="user-message-image"
+                    />
+                )}
+                {msg.file && !msg.imagePreview && (
+                    <div className={`user-message-file ${isLightMode ? 'light' : ''}`}>
+                        <div className="user-message-file-icon">
+                            <FileText size={18} />
+                        </div>
+                        <div className="attachment-body">
+                            <div className="attachment-name" title={msg.file}>{msg.file}</div>
+                            <div className="attachment-meta-line">
+                                <span className="attachment-badge">{getFileExtension(msg.file)}</span>
+                                {msg.fileSize ? <span>{formatFileSize(msg.fileSize)}</span> : null}
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {msg.text && (
+                    <div className={`user-message-text ${isLightMode ? 'light' : ''}`}>
+                        {msg.text}
+                    </div>
+                )}
+            </div>
+        );
+    }
+
     return (
         <div
             className={`message-bubble role-${msg.role} max-w-[85%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed relative select-text cursor-text ${msg.role === 'user'
@@ -1522,23 +1746,9 @@ const MessageBubble = memo(function MessageBubble({
                     : (isLightMode ? 'bg-[#ffffff] text-gray-800 border border-gray-200 shadow-sm' : 'bg-white/5 text-gray-200 border border-white/10')
                 }`}
         >
-            {msg.role === 'user' || msg.role === 'system' ? (
+            {msg.role === 'system' ? (
                 <>
                     {msg.text && <div>{msg.text}</div>}
-                    {msg.file && (
-                        <div className={`attachment-card attachment-card-inline mt-3 ${isLightMode ? 'light' : ''}`}>
-                            <div className="attachment-icon">
-                                <FileText size={16} className="flex-shrink-0" />
-                            </div>
-                            <div className="attachment-body">
-                                <div className="attachment-name truncate">{msg.file}</div>
-                                <div className="attachment-meta-line">
-                                    <span className="attachment-badge">{getFileExtension(msg.file)}</span>
-                                    {msg.fileSize ? <span>{formatFileSize(msg.fileSize)}</span> : null}
-                                </div>
-                            </div>
-                        </div>
-                    )}
                 </>
             ) : (() => {
                 const { cleanText, sources, docPath } = parseMessage(msg.text);
@@ -1554,7 +1764,18 @@ const MessageBubble = memo(function MessageBubble({
                         {docPath && (
                             <div className={`flex flex-wrap gap-1.5 mt-2 pt-2 border-t ${isLightMode ? 'border-gray-200' : 'border-white/5'}`}>
                                 <button
-                                    onClick={() => shell?.showItemInFolder(docPath)}
+                                    onClick={async () => {
+                                        try {
+                                            if (!ipcRenderer) throw new Error('Electron IPC unavailable');
+                                            await ipcRenderer.invoke('workspace-reveal-item', docPath);
+                                        } catch (error) {
+                                            window.alert(
+                                                `Не удалось открыть папку: ${
+                                                    error instanceof Error ? error.message : String(error)
+                                                }`,
+                                            );
+                                        }
+                                    }}
                                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] border rounded-lg transition-all cursor-pointer font-medium ${isLightMode
                                         ? 'bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-700 hover:text-blue-800'
                                         : 'bg-blue-500/20 hover:bg-blue-500/30 border-blue-500/30 text-blue-200 hover:text-white'
@@ -1573,6 +1794,482 @@ const MessageBubble = memo(function MessageBubble({
     );
 });
 
+function WorkspaceTreeRow({
+    entry,
+    depth,
+    expandedPaths,
+    directoryChildren,
+    loadingPaths,
+    onToggleDirectory,
+    onOpenFile,
+}: {
+    entry: WorkspaceEntry;
+    depth: number;
+    expandedPaths: Set<string>;
+    directoryChildren: Record<string, WorkspaceEntry[]>;
+    loadingPaths: Set<string>;
+    onToggleDirectory: (entry: WorkspaceEntry) => void;
+    onOpenFile: (entry: WorkspaceEntry) => void;
+}) {
+    const isExpanded = entry.isDirectory && expandedPaths.has(entry.path);
+    const isLoading = loadingPaths.has(entry.path);
+
+    const handleDragStart = (event: React.DragEvent<HTMLButtonElement>) => {
+        if (entry.isDirectory) {
+            event.preventDefault();
+            return;
+        }
+        event.dataTransfer.effectAllowed = 'copy';
+        event.dataTransfer.setData(WORKSPACE_FILE_DRAG_TYPE, entry.path);
+        event.dataTransfer.setData('text/plain', entry.path);
+    };
+
+    return (
+        <>
+            <button
+                type="button"
+                className={`workspace-tree-row ${entry.isDirectory ? 'is-directory' : 'is-file'}`}
+                style={{ paddingLeft: `${8 + depth * 15}px` }}
+                draggable={!entry.isDirectory}
+                onDragStart={handleDragStart}
+                onClick={() => entry.isDirectory && onToggleDirectory(entry)}
+                onDoubleClick={() => !entry.isDirectory && onOpenFile(entry)}
+                title={entry.path}
+            >
+                <span className="workspace-tree-chevron">
+                    {entry.isDirectory && (
+                        isLoading
+                            ? <RefreshCw size={12} className="workspace-spin" />
+                            : isExpanded
+                                ? <ChevronDown size={12} />
+                                : <ChevronRight size={12} />
+                    )}
+                </span>
+                {entry.isDirectory ? <Folder size={14} /> : <FileIcon size={14} />}
+                <span className="workspace-tree-name">{entry.name}</span>
+            </button>
+            {isExpanded && (directoryChildren[entry.path] || []).map(child => (
+                <WorkspaceTreeRow
+                    key={child.path}
+                    entry={child}
+                    depth={depth + 1}
+                    expandedPaths={expandedPaths}
+                    directoryChildren={directoryChildren}
+                    loadingPaths={loadingPaths}
+                    onToggleDirectory={onToggleDirectory}
+                    onOpenFile={onOpenFile}
+                />
+            ))}
+        </>
+    );
+}
+
+function WorkspacePanel({
+    mode,
+    onModeChange,
+}: {
+    mode: WorkspacePanelMode;
+    onModeChange: (mode: WorkspacePanelMode) => void;
+}) {
+    const [rootPath, setRootPath] = useState(() => localStorage.getItem(WORKSPACE_DIRECTORY_STORAGE_KEY) || '');
+    const [rootEntries, setRootEntries] = useState<WorkspaceEntry[]>([]);
+    const [directoryChildren, setDirectoryChildren] = useState<Record<string, WorkspaceEntry[]>>({});
+    const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+    const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
+    const [fileError, setFileError] = useState('');
+    const [terminalOutput, setTerminalOutput] = useState('');
+    const [terminalInput, setTerminalInput] = useState('');
+    const [terminalRunning, setTerminalRunning] = useState(false);
+    const terminalEndRef = useRef<HTMLDivElement | null>(null);
+    const terminalInputRef = useRef<HTMLInputElement | null>(null);
+    const terminalStartedRef = useRef(false);
+
+    const loadDirectory = useCallback(async (directoryPath: string) => {
+        if (!ipcRenderer || !directoryPath) return [];
+        return await ipcRenderer.invoke('workspace-list-directory', directoryPath) as WorkspaceEntry[];
+    }, []);
+
+    const refreshRoot = useCallback(async () => {
+        if (!rootPath) return;
+        setFileError('');
+        setLoadingPaths(previous => new Set(previous).add(rootPath));
+        try {
+            const entries = await loadDirectory(rootPath);
+            setRootEntries(entries);
+            setDirectoryChildren({});
+            setExpandedPaths(new Set());
+        } catch (error) {
+            setFileError(error instanceof Error ? error.message : 'Не удалось прочитать папку');
+        } finally {
+            setLoadingPaths(previous => {
+                const next = new Set(previous);
+                next.delete(rootPath);
+                return next;
+            });
+        }
+    }, [loadDirectory, rootPath]);
+
+    useEffect(() => {
+        if (rootPath) {
+            refreshRoot();
+        }
+    }, [refreshRoot, rootPath]);
+
+    useEffect(() => {
+        if (!ipcRenderer) return;
+        const handleOutput = (_event: unknown, chunk: string) => {
+            setTerminalOutput(previous => `${previous}${chunk}`.slice(-100000));
+        };
+        const handleExit = (_event: unknown, payload: { code?: number }) => {
+            setTerminalRunning(false);
+            setTerminalOutput(previous => `${previous}\r\n[CMD завершён: ${payload?.code ?? 0}]\r\n`);
+        };
+        ipcRenderer.on('terminal-output', handleOutput);
+        ipcRenderer.on('terminal-exit', handleExit);
+        return () => {
+            ipcRenderer.removeListener('terminal-output', handleOutput);
+            ipcRenderer.removeListener('terminal-exit', handleExit);
+            ipcRenderer.send('terminal-stop');
+        };
+    }, []);
+
+    useEffect(() => {
+        if (mode !== 'terminal' || !ipcRenderer || terminalRunning || terminalStartedRef.current) return;
+        terminalStartedRef.current = true;
+        ipcRenderer.invoke<{ cwd?: string }>('terminal-start', rootPath || null)
+            .then(result => {
+                setTerminalRunning(true);
+                setTerminalOutput(previous => previous || `CMD · ${result?.cwd || ''}\r\n`);
+            })
+            .catch((error: Error) => {
+                terminalStartedRef.current = false;
+                setTerminalOutput(previous => `${previous}[Не удалось запустить CMD] ${error.message}\r\n`);
+            });
+    }, [mode, rootPath, terminalRunning]);
+
+    useEffect(() => {
+        terminalEndRef.current?.scrollIntoView({ block: 'end' });
+    }, [terminalOutput]);
+
+    useEffect(() => {
+        if (mode === 'terminal') {
+            window.setTimeout(() => terminalInputRef.current?.focus(), 0);
+        }
+    }, [mode]);
+
+    const chooseDirectory = async () => {
+        if (!ipcRenderer) return;
+        const selectedPath = await ipcRenderer.invoke('workspace-select-directory') as string | null;
+        if (!selectedPath) return;
+        localStorage.setItem(WORKSPACE_DIRECTORY_STORAGE_KEY, selectedPath);
+        setRootPath(selectedPath);
+    };
+
+    const toggleDirectory = async (entry: WorkspaceEntry) => {
+        if (expandedPaths.has(entry.path)) {
+            setExpandedPaths(previous => {
+                const next = new Set(previous);
+                next.delete(entry.path);
+                return next;
+            });
+            return;
+        }
+        if (!directoryChildren[entry.path]) {
+            setLoadingPaths(previous => new Set(previous).add(entry.path));
+            try {
+                const entries = await loadDirectory(entry.path);
+                setDirectoryChildren(previous => ({ ...previous, [entry.path]: entries }));
+            } catch (error) {
+                setFileError(error instanceof Error ? error.message : 'Не удалось прочитать папку');
+                return;
+            } finally {
+                setLoadingPaths(previous => {
+                    const next = new Set(previous);
+                    next.delete(entry.path);
+                    return next;
+                });
+            }
+        }
+        setExpandedPaths(previous => new Set(previous).add(entry.path));
+    };
+
+    const openFile = async (entry: WorkspaceEntry) => {
+        if (!ipcRenderer) return;
+        try {
+            await ipcRenderer.invoke('workspace-open-file', entry.path);
+        } catch (error) {
+            setFileError(error instanceof Error ? error.message : 'Не удалось открыть файл');
+        }
+    };
+
+    const submitTerminalCommand = () => {
+        const command = terminalInput.trim();
+        if (!command || !ipcRenderer) return;
+        setTerminalOutput(previous => `${previous}> ${command}\r\n`);
+        ipcRenderer.send('terminal-input', `${command}\r\n`);
+        setTerminalInput('');
+    };
+
+    const rootName = rootPath.split(/[\\/]/).filter(Boolean).pop() || rootPath;
+
+    return (
+        <aside className="workspace-panel no-drag-region">
+            <div className="workspace-panel-tabs">
+                <button type="button" className={mode === 'files' ? 'active' : ''} onClick={() => onModeChange('files')} title="Файлы">
+                    <FolderOpen size={16} />
+                </button>
+                <button type="button" className={mode === 'terminal' ? 'active' : ''} onClick={() => onModeChange('terminal')} title="CMD">
+                    <TerminalSquare size={16} />
+                </button>
+            </div>
+
+            {mode === 'files' ? (
+                <div className="workspace-files-view">
+                    <div className="workspace-panel-heading">
+                        <div>
+                            <span className="workspace-heading-mark">▦</span>
+                            <strong>{rootName || 'ФАЙЛЫ'}</strong>
+                        </div>
+                        <div className="workspace-heading-actions">
+                            {rootPath && (
+                                <>
+                                    <button type="button" onClick={refreshRoot} title="Обновить">
+                                        <RefreshCw size={14} />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => ipcRenderer?.invoke('workspace-open-file', rootPath)}
+                                        title="Открыть в проводнике"
+                                    >
+                                        <ExternalLink size={14} />
+                                    </button>
+                                </>
+                            )}
+                            <button type="button" onClick={chooseDirectory} title="Выбрать папку">
+                                <FolderOpen size={14} />
+                            </button>
+                        </div>
+                    </div>
+                    {!rootPath && (
+                        <button type="button" className="workspace-select-directory" onClick={chooseDirectory}>
+                            <FolderOpen size={18} />
+                            <span>Выбрать папку</span>
+                        </button>
+                    )}
+                    {fileError && <div className="workspace-panel-error">{fileError}</div>}
+                    <div className="workspace-tree">
+                        {rootEntries.map(entry => (
+                            <WorkspaceTreeRow
+                                key={entry.path}
+                                entry={entry}
+                                depth={0}
+                                expandedPaths={expandedPaths}
+                                directoryChildren={directoryChildren}
+                                loadingPaths={loadingPaths}
+                                onToggleDirectory={toggleDirectory}
+                                onOpenFile={openFile}
+                            />
+                        ))}
+                    </div>
+                    {rootPath && <div className="workspace-files-hint">Перетащите файл в чат или откройте двойным щелчком</div>}
+                </div>
+            ) : (
+                <div className="workspace-terminal-view">
+                    <div className="workspace-panel-heading">
+                        <div>
+                            <span className="workspace-heading-mark">▦</span>
+                            <strong>CMD</strong>
+                        </div>
+                        <button type="button" onClick={() => setTerminalOutput('')} title="Очистить">Очистить</button>
+                    </div>
+                    <div
+                        className="workspace-terminal-output"
+                        onClick={() => terminalInputRef.current?.focus()}
+                        role="textbox"
+                        tabIndex={0}
+                        aria-label="Терминал CMD"
+                    >
+                        <pre>{terminalOutput || 'Запуск CMD...'}</pre>
+                        <div className="workspace-terminal-live-prompt">
+                            <span>&gt;</span>
+                            <span>{terminalInput}</span>
+                            <i />
+                        </div>
+                        <input
+                            ref={terminalInputRef}
+                            className="workspace-terminal-capture"
+                            value={terminalInput}
+                            onChange={event => setTerminalInput(event.target.value)}
+                            onKeyDown={event => {
+                                if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    submitTerminalCommand();
+                                }
+                                if (event.key.toLowerCase() === 'c' && event.ctrlKey && ipcRenderer) {
+                                    event.preventDefault();
+                                    ipcRenderer.send('terminal-input', '\u0003');
+                                }
+                            }}
+                            autoComplete="off"
+                            spellCheck={false}
+                            aria-label="Ввод команды"
+                        />
+                        <div ref={terminalEndRef} />
+                    </div>
+                </div>
+            )}
+        </aside>
+    );
+}
+
+function ProjectsView({ onClose }: { onClose: () => void }) {
+    const [projects, setProjects] = useState<ProjectEntry[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    const refresh = useCallback(async () => {
+        if (!ipcRenderer) return;
+        setLoading(true);
+        setError('');
+        try {
+            setProjects(await ipcRenderer.invoke('projects-list') as ProjectEntry[]);
+        } catch (loadError) {
+            setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить проекты');
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        refresh();
+    }, [refresh]);
+
+    return (
+        <section className="projects-view no-drag-region">
+            <div className="projects-header">
+                <div>
+                    <h2>Проекты</h2>
+                    <span>Созданные презентации</span>
+                </div>
+                <div className="projects-header-actions">
+                    <button type="button" onClick={refresh} title="Обновить"><RefreshCw size={15} /></button>
+                    <button type="button" onClick={onClose} title="Закрыть"><X size={16} /></button>
+                </div>
+            </div>
+            {error && <div className="workspace-panel-error">{error}</div>}
+            {loading ? (
+                <div className="projects-empty">Загрузка проектов...</div>
+            ) : projects.length === 0 ? (
+                <div className="projects-empty">
+                    <FileStack size={28} />
+                    <strong>Проектов пока нет</strong>
+                    <span>Созданные презентации появятся здесь автоматически.</span>
+                </div>
+            ) : (
+                <div className="projects-grid">
+                    {projects.map(project => (
+                        <article className="project-card" key={project.path}>
+                            <div className="project-card-icon"><FileStack size={20} /></div>
+                            <div className="project-card-copy">
+                                <strong title={project.name}>{project.name.replace(/\.pptx$/i, '')}</strong>
+                                <span>{formatFileSize(project.size)} · {new Date(project.updatedAt).toLocaleString('ru-RU')}</span>
+                            </div>
+                            <div className="project-card-actions">
+                                <button type="button" onClick={() => ipcRenderer?.invoke('workspace-open-file', project.path)}>
+                                    Открыть
+                                </button>
+                                <button type="button" onClick={() => ipcRenderer?.invoke('workspace-reveal-item', project.path)}>
+                                    В проводнике
+                                </button>
+                            </div>
+                        </article>
+                    ))}
+                </div>
+            )}
+        </section>
+    );
+}
+
+function SkillsView({ onClose }: { onClose: () => void }) {
+    const [skills, setSkills] = useState<SkillEntry[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    const refresh = useCallback(async () => {
+        setLoading(true);
+        setError('');
+        try {
+            const response = await veraFetch('http://127.0.0.1:8000/api/skills');
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload?.error || `HTTP ${response.status}`);
+            }
+            setSkills(Array.isArray(payload?.skills) ? payload.skills : []);
+        } catch (loadError) {
+            setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить skills');
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        void refresh();
+    }, [refresh]);
+
+    return (
+        <section className="skills-view no-drag-region">
+            <div className="skills-header">
+                <div>
+                    <h2>Skills</h2>
+                    <span>{loading ? 'Загрузка...' : `${skills.length} установлено`}</span>
+                </div>
+                <div className="skills-header-actions">
+                    <button type="button" onClick={() => void refresh()} title="Обновить"><RefreshCw size={15} /></button>
+                    <button type="button" onClick={onClose} title="Закрыть"><X size={16} /></button>
+                </div>
+            </div>
+            {error && <div className="workspace-panel-error">{error}</div>}
+            {loading ? (
+                <div className="skills-empty">Загрузка skills...</div>
+            ) : skills.length === 0 ? (
+                <div className="skills-empty">
+                    <Boxes size={28} />
+                    <strong>Установленных skills пока нет</strong>
+                    <span>Добавьте навык в папку Vera/skills, чтобы он появился здесь.</span>
+                </div>
+            ) : (
+                <div className="skills-grid">
+                    {skills.map(skill => (
+                        <article className="skill-card" key={skill.name}>
+                            <div className="skill-card-heading">
+                                <div className="skill-card-icon"><Boxes size={20} /></div>
+                                <div className="skill-card-title">
+                                    <strong>{skill.title}</strong>
+                                    <code>{skill.name}</code>
+                                </div>
+                                <span className={`skill-source ${skill.source}`}>
+                                    {skill.source === 'user' ? 'Пользовательский' : 'Встроенный'}
+                                </span>
+                            </div>
+                            <p>{skill.description || 'Описание навыка не указано.'}</p>
+                            <div className="skill-card-meta">
+                                {skill.model_profile && <span>Модель: {skill.model_profile}</span>}
+                                {skill.activation && <span>Активация: {skill.activation}</span>}
+                            </div>
+                            {skill.allowed_tools.length > 0 && (
+                                <div className="skill-tools">
+                                    <span className="skill-tools-label"><Wrench size={12} /> Инструменты</span>
+                                    {skill.allowed_tools.map(tool => <code key={tool}>{tool}</code>)}
+                                </div>
+                            )}
+                        </article>
+                    ))}
+                </div>
+            )}
+        </section>
+    );
+}
+
 function ChatView({
     currentThemeId,
     onThemeChange,
@@ -1583,10 +2280,38 @@ function ChatView({
     isLightMode: boolean;
 }) {
     const [messages, setMessages] = useState<Message[]>([]);
+    const [activeSessionId, setActiveSessionId] = useState<string | null>(() => readActiveSessionId());
+    const [sessionsPanelOpen, setSessionsPanelOpen] = useState(true);
+    const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
+    const [workspacePanelMode, setWorkspacePanelMode] = useState<WorkspacePanelMode>('files');
+    const [projectsOpen, setProjectsOpen] = useState(false);
+    const [skillsOpen, setSkillsOpen] = useState(false);
     const [input, setInput] = useState('');
     const [status, setStatus] = useState('listening');
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isConnected, setIsConnected] = useState(false);
+    const [isAgentReady, setIsAgentReady] = useState(false);
+    const [isMaximized, setIsMaximized] = useState(false);
+    const [logsOpen, setLogsOpen] = useState(false);
+    const [logs, setLogs] = useState<LogEntry[]>([]);
+    const [settingsInitialSection, setSettingsInitialSection] = useState('appearance');
+    const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo>(() => ({
+        version: '1.1.1',
+        model_name: localStorage.getItem(RUNTIME_MODEL_STORAGE_KEY) || 'Загрузка модели...',
+    }));
+    const [isDraggingFile, setIsDraggingFile] = useState(false);
+    const [activityLabel, setActivityLabel] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!ipcRenderer) return;
+        const handleWindowState = (_event: any, state: { isMaximized: boolean; isFullScreen: boolean }) => {
+            setIsMaximized(state.isMaximized || state.isFullScreen);
+        };
+        ipcRenderer.on('window-state-changed', handleWindowState);
+        return () => {
+            ipcRenderer.removeListener('window-state-changed', handleWindowState);
+        };
+    }, []);
     const [thinkingEnabled, setThinkingEnabled] = useState(() => {
         const saved = localStorage.getItem('vera_thinking_enabled');
         return saved === null ? true : saved === 'true';
@@ -1597,11 +2322,16 @@ function ChatView({
     });
 
     const wsRef = useRef<WebSocket | null>(null);
+    const activeSessionIdRef = useRef<string | null>(null);
+    const sessionsInitializedRef = useRef(false);
     const messagesEndRef = useRef<HTMLDivElement | null>(null);
     const pendingUserMsgs = useRef<Set<string>>(new Set()); // РўСЂРµРєРµСЂ РѕРїС‚РёРјРёСЃС‚РёС‡РЅС‹С… СЃРѕРѕР±С‰РµРЅРёР№
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const [attachedFile, setAttachedFile] = useState<File | null>(null);
-    const [isUploading, setIsUploading] = useState(false);
+    const attachmentPreviewUrl = useMemo(
+        () => attachedFile && isImageFile(attachedFile) ? URL.createObjectURL(attachedFile) : null,
+        [attachedFile],
+    );
     const [isMuted, setIsMuted] = useState(false);
     const [renderWindow, setRenderWindow] = useState(120);
     const thinkingEnabledRef = useRef(thinkingEnabled);
@@ -1609,6 +2339,352 @@ function ChatView({
     const pendingChunksRef = useRef<any[]>([]);
     const chunkFlushRafRef = useRef<number | null>(null);
     const ignoreLateChunksRef = useRef(false);
+    const logSequenceRef = useRef(0);
+    const logsEndRef = useRef<HTMLDivElement | null>(null);
+    const dragDepthRef = useRef(0);
+    const newSessionShortcutAtRef = useRef(0);
+    const agentReadyRef = useRef(false);
+
+    useEffect(() => {
+        return () => {
+            if (attachmentPreviewUrl) URL.revokeObjectURL(attachmentPreviewUrl);
+        };
+    }, [attachmentPreviewUrl]);
+
+    const appendLog = useCallback((
+        text: string,
+        level: LogEntry['level'] = 'info',
+        detail?: string,
+    ) => {
+        const entry: LogEntry = {
+            id: ++logSequenceRef.current,
+            time: new Date().toLocaleTimeString('ru-RU', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+            }),
+            level,
+            text,
+            detail,
+        };
+        setLogs(prev => [...prev.slice(-299), entry]);
+    }, []);
+
+    useEffect(() => {
+        if (logsOpen) {
+            logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [logs, logsOpen]);
+
+    useEffect(() => {
+        if (!isConnected) return;
+        let cancelled = false;
+        let retryTimer: number | null = null;
+        let attempt = 0;
+        const retryDelays = [0, 500, 1500, 3000, 6000, 10000];
+
+        const loadRuntimeInfo = async () => {
+            try {
+                const response = await veraFetch('http://127.0.0.1:8000/api/runtime-info');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                const modelName = String(data?.model_name || '').trim();
+                if (!modelName || modelName === 'Unknown model') {
+                    throw new Error('Model name is not ready');
+                }
+                if (cancelled) return;
+                localStorage.setItem(RUNTIME_MODEL_STORAGE_KEY, modelName);
+                setRuntimeInfo({
+                    version: String(data.version || '1.1.1'),
+                    model_name: modelName,
+                    model_path: typeof data.model_path === 'string' ? data.model_path : undefined,
+                });
+            } catch {
+                attempt += 1;
+                if (!cancelled && attempt < retryDelays.length) {
+                    retryTimer = window.setTimeout(loadRuntimeInfo, retryDelays[attempt]);
+                }
+            }
+        };
+
+        loadRuntimeInfo();
+        return () => {
+            cancelled = true;
+            if (retryTimer != null) window.clearTimeout(retryTimer);
+        };
+    }, [isConnected]);
+
+    useEffect(() => {
+        activeSessionIdRef.current = activeSessionId;
+        writeActiveSessionId(activeSessionId);
+    }, [activeSessionId]);
+
+    const handleMinimize = useCallback(() => {
+        if (ipcRenderer) {
+            ipcRenderer.send('minimize-chat');
+        }
+    }, []);
+
+    const handleToggleFullscreen = useCallback(() => {
+        if (ipcRenderer) {
+            ipcRenderer.send('toggle-chat-fullscreen');
+        }
+    }, []);
+
+    const handleQuitApp = useCallback(() => {
+        if (ipcRenderer) {
+            ipcRenderer.send('quit-app');
+            return;
+        }
+        window.close();
+    }, []);
+
+    const openSettingsSection = useCallback((section: string) => {
+        setSettingsInitialSection(section);
+        setIsSettingsOpen(true);
+    }, []);
+
+    const attachWorkspaceFile = useCallback(async (filePath: string) => {
+        if (!ipcRenderer || !filePath) return;
+        try {
+            const result = await ipcRenderer.invoke('workspace-read-file', filePath) as {
+                name: string;
+                size: number;
+                data: Uint8Array | { data: number[] };
+            };
+            const source = result.data instanceof Uint8Array
+                ? result.data
+                : new Uint8Array(result.data.data);
+            const bytes = new Uint8Array(source.byteLength);
+            bytes.set(source);
+            const file = new File([bytes.buffer], result.name, {
+                type: getImageMimeType(result.name) || 'application/octet-stream',
+                lastModified: Date.now(),
+            });
+            setAttachedFile(file);
+            appendLog('Файл прикреплён', 'success', result.name);
+        } catch (error) {
+            appendLog(
+                'Не удалось прикрепить файл',
+                'error',
+                error instanceof Error ? error.message : String(error),
+            );
+        }
+    }, [appendLog]);
+
+    const handleDragEnter = useCallback((event: React.DragEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const dragTypes = Array.from(event.dataTransfer.types);
+        if (!dragTypes.includes('Files') && !dragTypes.includes(WORKSPACE_FILE_DRAG_TYPE)) return;
+        dragDepthRef.current += 1;
+        setIsDraggingFile(true);
+    }, []);
+
+    const handleDragOver = useCallback((event: React.DragEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const dragTypes = Array.from(event.dataTransfer.types);
+        if (dragTypes.includes('Files') || dragTypes.includes(WORKSPACE_FILE_DRAG_TYPE)) {
+            event.dataTransfer.dropEffect = 'copy';
+        }
+    }, []);
+
+    const handleDragLeave = useCallback((event: React.DragEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) {
+            setIsDraggingFile(false);
+        }
+    }, []);
+
+    const handleFileDrop = useCallback((event: React.DragEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dragDepthRef.current = 0;
+        setIsDraggingFile(false);
+        const workspaceFilePath = event.dataTransfer.getData(WORKSPACE_FILE_DRAG_TYPE);
+        if (workspaceFilePath) {
+            attachWorkspaceFile(workspaceFilePath);
+            return;
+        }
+        const file = event.dataTransfer.files?.[0];
+        if (!file) return;
+        setAttachedFile(file);
+        appendLog('Файл прикреплён', 'success', file.name);
+    }, [appendLog, attachWorkspaceFile]);
+
+    const pushSystemMessage = useCallback((text: string) => {
+        setMessages(prev => [...prev, { role: 'system', text }]);
+    }, []);
+
+    const refreshSessions = useCallback(async () => {
+        const next = await listSessions(veraFetch);
+        return next;
+    }, []);
+
+    const selectSession = useCallback(async (sessionId: string) => {
+        setProjectsOpen(false);
+        setSkillsOpen(false);
+        ignoreLateChunksRef.current = true;
+        pendingChunksRef.current = [];
+        if (chunkFlushRafRef.current != null) {
+            window.cancelAnimationFrame(chunkFlushRafRef.current);
+            chunkFlushRafRef.current = null;
+        }
+        const stored = await loadSessionMessages(veraFetch, sessionId);
+        activeSessionIdRef.current = sessionId;
+        setActiveSessionId(sessionId);
+        bumpSessionsRevision();
+        setMessages(stored.map(item => ({
+            role: item.role,
+            text: item.metadata?.has_user_text === false ? '' : item.content,
+            file: typeof item.metadata?.file_name === 'string' ? item.metadata.file_name : undefined,
+            fileSize: typeof item.metadata?.file_size === 'number' ? item.metadata.file_size : undefined,
+            imagePreview: typeof item.metadata?.image_preview_data_url === 'string'
+                ? item.metadata.image_preview_data_url
+                : undefined,
+        })));
+        setRenderWindow(120);
+    }, []);
+
+    const startNewSession = useCallback(async () => {
+        setProjectsOpen(false);
+        setSkillsOpen(false);
+        const created = await createSession(veraFetch);
+        activeSessionIdRef.current = created.id;
+        setActiveSessionId(created.id);
+        bumpSessionsRevision();
+        setMessages([]);
+        setInput('');
+        setAttachedFile(null);
+        setRenderWindow(120);
+        return created;
+    }, []);
+
+    const createSessionFromShortcut = useCallback(() => {
+        const now = Date.now();
+        if (now - newSessionShortcutAtRef.current < 500) return;
+        newSessionShortcutAtRef.current = now;
+        startNewSession().catch(error => {
+            pushSystemMessage(`Не удалось создать новую сессию: ${error.message}`);
+        });
+    }, [pushSystemMessage, startNewSession]);
+
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'n' || event.repeat) {
+                return;
+            }
+            event.preventDefault();
+            createSessionFromShortcut();
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [createSessionFromShortcut]);
+
+    useEffect(() => {
+        const onPaste = (event: ClipboardEvent) => {
+            const clipboard = event.clipboardData;
+            if (!clipboard) return;
+
+            let pastedFile: File | null = clipboard.files?.[0] || null;
+            if (!pastedFile) {
+                for (const item of Array.from(clipboard.items || [])) {
+                    if (item.kind !== 'file') continue;
+                    pastedFile = item.getAsFile();
+                    if (pastedFile) break;
+                }
+            }
+            if (!pastedFile) return;
+
+            event.preventDefault();
+            const isClipboardImage = isImageFile(pastedFile);
+            const file = isClipboardImage && (!pastedFile.name || pastedFile.name === 'image.png')
+                ? new File(
+                    [pastedFile],
+                    `clipboard-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
+                    { type: pastedFile.type || 'image/png', lastModified: Date.now() },
+                )
+                : pastedFile;
+            setAttachedFile(file);
+            appendLog(
+                isClipboardImage ? 'Изображение вставлено из буфера' : 'Файл вставлен из буфера',
+                'success',
+                file.name,
+            );
+        };
+
+        window.addEventListener('paste', onPaste);
+        return () => window.removeEventListener('paste', onPaste);
+    }, [appendLog]);
+
+    useEffect(() => {
+        if (!ipcRenderer) return;
+        const onNewSessionShortcut = () => createSessionFromShortcut();
+        ipcRenderer.on('new-session-shortcut', onNewSessionShortcut);
+        return () => ipcRenderer.removeListener('new-session-shortcut', onNewSessionShortcut);
+    }, [createSessionFromShortcut]);
+
+    useEffect(() => {
+        if (sessionsInitializedRef.current) return;
+        sessionsInitializedRef.current = true;
+        refreshSessions()
+            .then(async items => {
+                const preferredSessionId = readActiveSessionId();
+                const preferred = preferredSessionId
+                    ? items.find(item => item.id === preferredSessionId)
+                    : null;
+                if (preferred) {
+                    await selectSession(preferred.id);
+                } else if (items.length > 0) {
+                    await selectSession(items[0].id);
+                } else {
+                    await startNewSession();
+                }
+            })
+            .catch(error => {
+                sessionsInitializedRef.current = false;
+                console.error('Не удалось загрузить сессии', error);
+            });
+    }, [pushSystemMessage, refreshSessions, selectSession, startNewSession]);
+
+    useEffect(() => {
+        const onStorage = (event: StorageEvent) => {
+            if (event.key === ACTIVE_SESSION_STORAGE_KEY) {
+                const nextId = readActiveSessionId();
+                if (nextId && nextId !== activeSessionIdRef.current) {
+                    selectSession(nextId).catch(error => {
+                        pushSystemMessage(`Ошибка переключения сессии: ${error.message}`);
+                    });
+                }
+            }
+            if (event.key === SESSIONS_REV_STORAGE_KEY) {
+                refreshSessions().catch(() => undefined);
+            }
+        };
+        const onActiveSession = (event: Event) => {
+            const nextId = (event as CustomEvent<string | null>).detail;
+            if (nextId && nextId !== activeSessionIdRef.current) {
+                selectSession(nextId).catch(error => {
+                    pushSystemMessage(`Ошибка переключения сессии: ${error.message}`);
+                });
+            }
+        };
+        const onSessionsRevision = () => {
+            refreshSessions().catch(() => undefined);
+        };
+
+        window.addEventListener('storage', onStorage);
+        window.addEventListener(ACTIVE_SESSION_EVENT, onActiveSession);
+        window.addEventListener(SESSIONS_REV_EVENT, onSessionsRevision);
+        return () => {
+            window.removeEventListener('storage', onStorage);
+            window.removeEventListener(ACTIVE_SESSION_EVENT, onActiveSession);
+            window.removeEventListener(SESSIONS_REV_EVENT, onSessionsRevision);
+        };
+    }, [pushSystemMessage, refreshSessions, selectSession]);
 
     const findLastStreamingAssistantIndex = useCallback((arr: Message[]): number => {
         for (let i = arr.length - 1; i >= 0; i--) {
@@ -1629,10 +2705,10 @@ function ChatView({
         if (messages.length <= renderWindow) return messages;
         return messages.slice(-renderWindow);
     }, [messages, renderWindow]);
-    const pushSystemMessage = useCallback((text: string) => {
-        setMessages(prev => [...prev, { role: 'system', text }]);
-    }, []);
-
+    const hasActiveStreamingMessage = useMemo(
+        () => visibleMessages.some(message => message.role === 'assistant' && message.streaming),
+        [visibleMessages],
+    );
     const flushChunkBatch = useCallback(() => {
         chunkFlushRafRef.current = null;
         const batch = pendingChunksRef.current;
@@ -1685,20 +2761,63 @@ function ChatView({
                 onOpen: (ws) => {
                     wsRef.current = ws;
                     setIsConnected(prev => (prev ? prev : true));
+                    agentReadyRef.current = false;
+                    setIsAgentReady(false);
+                    appendLog('Соединение с Vera установлено', 'success');
                     ws.send(JSON.stringify({
                         type: 'set_thinking_mode',
                         enabled: thinkingEnabledRef.current,
                         reasoning_budget: reasoningBudgetRef.current,
                     }));
                     ws.send(JSON.stringify({ type: 'get_thinking_mode' }));
+                    ws.send(JSON.stringify({ type: 'get_runtime_info' }));
+                    ws.send(JSON.stringify({ type: 'get_agent_status' }));
                 },
-                onError: () => setIsConnected(prev => (prev ? false : prev)),
-                onClose: () => setIsConnected(prev => (prev ? false : prev)),
+                onError: () => {
+                    setIsConnected(prev => (prev ? false : prev));
+                    agentReadyRef.current = false;
+                    setIsAgentReady(false);
+                    appendLog('Ошибка соединения с сервером', 'error');
+                },
+                onClose: () => {
+                    setIsConnected(prev => (prev ? false : prev));
+                    agentReadyRef.current = false;
+                    setIsAgentReady(false);
+                    appendLog('Соединение потеряно. Переподключаюсь...', 'error');
+                },
                 onMessage: (event) => {
                     try {
                         const data = JSON.parse(event.data);
+                        if (data.type === 'task_status' && data.session_id) {
+                            if (data.state === 'completed' || data.state === 'failed') {
+                                refreshSessions().then(() => bumpSessionsRevision()).catch(() => undefined);
+                            }
+                        }
+                        if (data.session_id && data.session_id !== activeSessionIdRef.current) {
+                            return;
+                        }
                         if (data.type === 'state') {
                             setStatus(prev => (prev === data.value ? prev : data.value));
+                            if (data.value !== 'thinking') {
+                                setActivityLabel(null);
+                            }
+                            const stateLabels: Record<string, string> = {
+                                thinking: 'Думает',
+                                speaking: 'Озвучивает ответ',
+                                listening: 'Готова к следующей задаче',
+                                idle: 'Ожидает задачу',
+                            };
+                            appendLog(stateLabels[data.value] || `Состояние: ${data.value}`);
+                            return;
+                        }
+                        if (data.type === 'agent_status') {
+                            const ready = Boolean(data.ready);
+                            const becameReady = ready && !agentReadyRef.current;
+                            agentReadyRef.current = ready;
+                            setIsAgentReady(ready);
+                            if (becameReady) {
+                                appendLog('Vera полностью запущена и готова', 'success');
+                            }
                             return;
                         }
                         if (data.type === 'thinking_mode') {
@@ -1710,9 +2829,35 @@ function ChatView({
                             }
                             return;
                         }
+                        if (data.type === 'runtime_info') {
+                            const modelName = String(data.model_name || '').trim();
+                            if (modelName && modelName !== 'Unknown model') {
+                                localStorage.setItem(RUNTIME_MODEL_STORAGE_KEY, modelName);
+                                setRuntimeInfo({
+                                    version: String(data.version || '1.1.1'),
+                                    model_name: modelName,
+                                    model_path: typeof data.model_path === 'string' ? data.model_path : undefined,
+                                });
+                            }
+                            return;
+                        }
                         if (data.type === 'task_status') {
                             if (data.state === 'queued' || data.state === 'running') {
                                 ignoreLateChunksRef.current = false;
+                            }
+                            const taskLabels: Record<string, string> = {
+                                queued: 'Задача добавлена в очередь',
+                                running: 'Задача запущена',
+                                completed: 'Задача завершена',
+                                failed: 'Задача завершилась с ошибкой',
+                            };
+                            appendLog(
+                                taskLabels[data.state] || `Задача: ${data.state}`,
+                                data.state === 'failed' ? 'error' : data.state === 'completed' ? 'success' : 'info',
+                                data.reason ? String(data.reason) : undefined,
+                            );
+                            if (data.state === 'completed' || data.state === 'failed') {
+                                setActivityLabel(null);
                             }
                             if (data.state === 'failed' && data.reason) {
                                 pushSystemMessage(`Задача завершилась с ошибкой: ${data.reason}`);
@@ -1720,7 +2865,16 @@ function ChatView({
                             return;
                         }
                         if (data.type === 'action_explain') {
-                            // Keep explain events internal (audit/debug), do not show in chat UI.
+                            appendLog(String(data.text || data.message || 'Выполняется действие'));
+                            return;
+                        }
+                        if (data.type === 'tool_result') {
+                            setActivityLabel(null);
+                            appendLog(
+                                `${data.name}: ${data.status === 'ok' ? 'готово' : 'ошибка'}`,
+                                data.status === 'ok' ? 'success' : 'error',
+                                data.result ? String(data.result) : undefined,
+                            );
                             return;
                         }
 
@@ -1756,14 +2910,19 @@ function ChatView({
                             return;
                         }
                         if (data.type === 'tool_call') {
-                            pushSystemMessage(`Использую инструмент: ${data.name}...`);
+                            setActivityLabel(getToolActivityLabel(String(data.name || 'tool')));
+                            const args = data.args && Object.keys(data.args).length
+                                ? JSON.stringify(data.args, null, 2)
+                                : undefined;
+                            appendLog(`Запуск инструмента: ${data.name}`, 'info', args);
                         }
                     } catch (e) { }
                 },
             },
             2000,
         );
-    }, [enqueueChunk, findLastStreamingAssistantIndex, pushSystemMessage]);
+    }, [appendLog, enqueueChunk, findLastStreamingAssistantIndex, pushSystemMessage, refreshSessions]);
+
     useEffect(() => {
         if (!ipcRenderer) {
             return;
@@ -1837,13 +2996,15 @@ function ChatView({
         };
     }, []);
 
-    const handleClose = () => {
-        if (ipcRenderer) ipcRenderer.send('close-chat');
-    };
-
     const handleSend = useCallback(async (e: React.FormEvent) => {
         e.preventDefault();
-        if ((!input.trim() && !attachedFile) || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!isAgentReady || (!input.trim() && !attachedFile) || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        setActivityLabel(null);
+        let targetSessionId = activeSessionIdRef.current;
+        if (!targetSessionId) {
+            const created = await startNewSession();
+            targetSessionId = created.id;
+        }
         ignoreLateChunksRef.current = false;
         pendingChunksRef.current = [];
         if (chunkFlushRafRef.current != null) {
@@ -1855,48 +3016,64 @@ function ChatView({
 
         let fullText = input.trim();
         let fileContextStr = '';
+        let imageDataUrl = '';
+        let imagePreviewDataUrl = '';
+        const selectedFile = attachedFile;
 
         // РћРїС‚РёРјРёСЃС‚РёС‡РЅРѕРµ РѕС‚РѕР±СЂР°Р¶РµРЅРёРµ СЃРѕРѕР±С‰РµРЅРёСЏ
-        const userMsg: Message = { role: 'user', text: fullText };
-        if (attachedFile) {
-            userMsg.file = attachedFile.name;
-            userMsg.fileSize = attachedFile.size;
-        }
-        setMessages(prev => [...prev, userMsg]);
-        pendingUserMsgs.current.add(fullText || (attachedFile ? attachedFile.name : ''));
-
         // Р•СЃР»Рё РµСЃС‚СЊ С„Р°Р№Р» вЂ” Р·Р°РіСЂСѓР¶Р°РµРј Рё РёР·РІР»РµРєР°РµРј С‚РµРєСЃС‚
-        if (attachedFile) {
-            setIsUploading(true);
+        if (selectedFile) {
             try {
                 const formData = new FormData();
-                formData.append('file', attachedFile);
+                formData.append('file', selectedFile);
                 const res = await veraFetch('http://127.0.0.1:8000/api/upload', {
                     method: 'POST',
                     body: formData
                 });
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
                 const data = await res.json();
-                fileContextStr = data.text || '';
+                if (data.kind === 'image' && data.image_data_url) {
+                    imageDataUrl = String(data.image_data_url);
+                    imagePreviewDataUrl = String(data.image_preview_data_url || data.image_data_url);
+                } else {
+                    fileContextStr = data.text || '';
+                }
             } catch (err) {
-                fileContextStr = `[Ошибка загрузки файла: ${attachedFile.name}]`;
+                fileContextStr = `[Ошибка загрузки файла: ${selectedFile.name}]`;
             } finally {
-                setIsUploading(false);
                 setAttachedFile(null);
                 if (fileInputRef.current) fileInputRef.current.value = '';
             }
         }
 
+        const userMsg: Message = {
+            role: 'user',
+            text: fullText,
+            file: selectedFile?.name,
+            fileSize: selectedFile?.size,
+            imagePreview: imagePreviewDataUrl || undefined,
+        };
+        setMessages(prev => [...prev, userMsg]);
+        pendingUserMsgs.current.add(fullText || (selectedFile ? selectedFile.name : ''));
+
         const payload = {
             type: 'command',
+            session_id: targetSessionId,
             text: fullText,
-            file_name: attachedFile ? attachedFile.name : null,
+            file_name: selectedFile ? selectedFile.name : null,
             file_context: fileContextStr,
+            image_preview_data_url: imagePreviewDataUrl || null,
+            file_size: selectedFile?.size || null,
+            image_data_url: imageDataUrl || null,
             task_id: `ui-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
         };
 
         wsRef.current.send(JSON.stringify(payload));
+        appendLog('Запрос отправлен', 'info', fullText || selectedFile?.name);
         setInput('');
-    }, [input, attachedFile]);
+    }, [appendLog, input, attachedFile, isAgentReady, startNewSession]);
 
     const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -1915,6 +3092,7 @@ function ChatView({
         const command = newMutedState ? '/mute' : '/unmute';
         const payload = {
             type: 'command',
+            session_id: activeSessionIdRef.current,
             text: command,
             file_name: null,
             file_context: ''
@@ -1934,57 +3112,112 @@ function ChatView({
     }, [thinkingEnabled, reasoningBudget]);
 
     return (
-        <div className="vera-shell relative w-full h-full flex flex-col rounded-xl overflow-hidden shadow-2xl transition-colors">
+        <div
+            className="vera-shell vera-workspace-shell relative w-full h-full overflow-hidden"
+        >
             <AnimatePresence>
                 <SettingsModal
                     isOpen={isSettingsOpen}
                     onClose={() => setIsSettingsOpen(false)}
                     currentThemeId={currentThemeId}
                     onThemeChange={onThemeChange}
+                    initialSection={settingsInitialSection}
                 />
             </AnimatePresence>
 
-            {/* РЁР°РїРєР° (Drag Region) */}
-            <div className={`flex items-center justify-between px-4 py-3 border-b drag-region transition-colors ${isLightMode ? 'bg-[#ffffff]/50 border-gray-200/50' : 'bg-white/5 border-white/10'
-                }`}>
-                <div className="flex items-center gap-2">
-                    <div className="w-2.5 h-2.5 rounded-full bg-slate-400 relative">
-                        {isConnected && status === 'speaking' && <div className={`absolute inset-0 w-full h-full rounded-full animate-pulse ${isLightMode ? 'bg-blue-500' : 'bg-white'}`} />}
-                        {isConnected && status === 'thinking' && <div className={`absolute inset-0 w-full h-full rounded-full animate-pulse ${isLightMode ? 'bg-slate-500' : 'bg-slate-300'}`} />}
-                        {!isConnected && <div className="absolute inset-0 w-full h-full rounded-full animate-pulse bg-red-500" />}
-                    </div>
-                    <span className={`text-sm font-medium tracking-wide select-none flex items-center ${isLightMode ? 'opacity-90' : 'opacity-80'}`}>
-                        Vera
-                        {!isConnected && <span className="text-[11px] font-normal tracking-normal ml-2 text-red-500/90 whitespace-nowrap">(ожидание)</span>}
-                    </span>
-                </div>
-                <div className="flex items-center gap-2 no-drag-region">
+            <div className="vera-workspace-layout">
+            {sessionsPanelOpen && (
+                <SessionPanelWindow
+                    veraFetch={veraFetch}
+                    onSkills={() => {
+                        setProjectsOpen(false);
+                        setSkillsOpen(true);
+                    }}
+                    onProjects={() => {
+                        setSkillsOpen(false);
+                        setProjectsOpen(true);
+                    }}
+                    onSessionOpen={() => {
+                        setProjectsOpen(false);
+                        setSkillsOpen(false);
+                    }}
+                    activeSection={skillsOpen ? 'skills' : projectsOpen ? 'projects' : null}
+                />
+            )}
+            <main
+                className="vera-workspace-main"
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleFileDrop}
+            >
+            <AnimatePresence>
+                {isDraggingFile && (
+                    <motion.div
+                        className="file-drop-overlay no-drag-region"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                    >
+                        <div className="file-drop-frame">
+                            <div className="file-drop-copy">
+                                <UploadCloud size={19} />
+                                <span>Перетащите файл, чтобы прикрепить</span>
+                            </div>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            <div className="vera-workspace-topbar drag-region">
+                <button
+                    onClick={() => setSessionsPanelOpen(value => !value)}
+                    className="vera-workspace-icon-button no-drag-region"
+                    title={sessionsPanelOpen ? 'Скрыть сессии' : 'Показать сессии'}
+                >
+                    <PanelRight size={18} />
+                </button>
+                <div />
+                <div className="vera-workspace-window-actions no-drag-region">
                     <button
-                        onClick={() => isConnected && setIsSettingsOpen(true)}
-                        disabled={!isConnected}
-                        className={`p-1.5 rounded-md transition-all ${!isConnected
-                            ? 'opacity-30 cursor-not-allowed text-gray-400'
-                            : (isLightMode
-                                ? 'text-gray-600 hover:bg-black/5 hover:text-gray-900'
-                                : 'text-white opacity-50 hover:opacity-100 hover:bg-white/10')
-                            }`}>
-                        <Settings size={16} />
+                        onClick={() => setWorkspacePanelOpen(value => !value)}
+                        className={workspacePanelOpen ? 'active' : ''}
+                        title={workspacePanelOpen ? 'Скрыть рабочую панель' : 'Показать рабочую панель'}
+                        aria-expanded={workspacePanelOpen}
+                    >
+                        <PanelLeft size={18} />
                     </button>
-                    <button onClick={handleClose} className={`p-1 rounded-md transition-all ${isLightMode
-                        ? 'text-gray-600 hover:bg-red-50 hover:text-red-500'
-                        : 'text-white opacity-50 hover:opacity-100 hover:bg-red-500/20 hover:text-red-400'
-                        }`}>
-                        <X size={16} />
+                    <button onClick={() => openSettingsSection('appearance')} title="Настройки"><Settings size={18} /></button>
+                    <button onClick={handleMinimize} title="Minimize"><Minus size={18} /></button>
+                    <button onClick={handleToggleFullscreen} title={isMaximized ? "Restore" : "Fullscreen"}>
+                        {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
                     </button>
+                    <button onClick={handleQuitApp} title="Close app"><X size={18} /></button>
                 </div>
             </div>
-
+            <AnimatePresence>
+                {!isAgentReady && (
+                    <motion.div
+                        className="agent-connection-overlay no-drag-region"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: reduceMotion ? 0 : 0.18 }}
+                        aria-live="polite"
+                        aria-busy="true"
+                    >
+                        <div className="agent-connection-label">
+                            <span>Соединение</span>
+                            <span className="agent-connection-dots" aria-hidden="true" />
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            {projectsOpen && <ProjectsView onClose={() => setProjectsOpen(false)} />}
+            {skillsOpen && <SkillsView onClose={() => setSkillsOpen(false)} />}
             {/* РЎРѕРѕР±С‰РµРЅРёСЏ */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-6 no-drag-region">
+            <div className="vera-workspace-messages no-drag-region">
                 {messages.length === 0 && (
-                    <div className={`h-full flex items-center justify-center text-sm ${isLightMode ? 'text-gray-400' : 'opacity-30'}`}>
-                        Скажите команду или напишите ниже...
-                    </div>
+                    <EmptyChatStage isLightMode={isLightMode} />
                 )}
 
                 {messages.length > visibleMessages.length && (
@@ -2010,18 +3243,16 @@ function ChatView({
                                 initial={reduceMotion ? false : { opacity: 0, y: 8 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 transition={{ duration: reduceMotion ? 0.12 : 0.2 }}
-                                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                                className={`vera-workspace-message-row flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                             >
                                 <MessageBubble msg={msg} isLightMode={isLightMode} />
                             </motion.div>
                         );
                     })}
-                    {status === 'thinking' && (
-                        <motion.div initial={reduceMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
-                            <div className={`px-4 py-3 text-sm italic flex items-center gap-2 ${isLightMode ? 'text-gray-500' : 'text-white/40'}`}>
-                                <div className={`w-1 h-1 rounded-full ${reduceMotion ? '' : 'animate-bounce'} ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} />
-                                <div className={`w-1 h-1 rounded-full ${reduceMotion ? '' : 'animate-bounce'} ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} style={{ animationDelay: '0.2s' }} />
-                                <div className={`w-1 h-1 rounded-full ${reduceMotion ? '' : 'animate-bounce'} ${isLightMode ? 'bg-gray-400' : 'bg-white/40'}`} style={{ animationDelay: '0.4s' }} />
+                    {status === 'thinking' && (!hasActiveStreamingMessage || activityLabel) && (
+                        <motion.div initial={reduceMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} className="vera-workspace-message-row flex justify-start">
+                            <div className={`thinking-status ${reduceMotion ? '' : 'is-animated'}`}>
+                                {activityLabel || 'Думает'}
                             </div>
                         </motion.div>
                     )}
@@ -2030,20 +3261,55 @@ function ChatView({
             </div>
 
             {/* РџР°РЅРµР»СЊ РІРІРѕРґР° */}
-            <div className={`p-4 ${isLightMode ? 'bg-[#ffffff]/50 border-t border-gray-200/50' : 'bg-transparent'}`}>
+            <div className="vera-workspace-composer-wrap">
+                <AnimatePresence initial={false}>
+                    {logsOpen && (
+                        <motion.div
+                            className="vera-workspace-log-panel"
+                            initial={reduceMotion ? false : { opacity: 0, y: 8, height: 0 }}
+                            animate={{ opacity: 1, y: 0, height: 210 }}
+                            exit={{ opacity: 0, y: 8, height: 0 }}
+                        >
+                            <div className="vera-workspace-log-header">
+                                <span>Логи</span>
+                                <button type="button" onClick={() => setLogs([])}>Очистить</button>
+                            </div>
+                            <div className="vera-workspace-log-list">
+                                {logs.length === 0 && <div className="vera-workspace-log-empty">Событий пока нет</div>}
+                                {logs.map(entry => (
+                                    <div key={entry.id} className={`vera-workspace-log-entry ${entry.level}`}>
+                                        <time>{entry.time}</time>
+                                        <div>
+                                            <div className="vera-workspace-log-message">{entry.text}</div>
+                                            {entry.detail && <pre>{entry.detail}</pre>}
+                                        </div>
+                                    </div>
+                                ))}
+                                <div ref={logsEndRef} />
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
                 {/* Р§РёРї РїСЂРёРєСЂРµРїР»С‘РЅРЅРѕРіРѕ С„Р°Р№Р»Р° */}
                 {attachedFile && (
-                    <div className="mb-3 max-w-3xl mx-auto">
+                    <div className="attachment-preview-wrap">
                         <div className={`attachment-card ${isLightMode ? 'light' : ''}`}>
-                            <div className="attachment-icon">
-                                <FileText size={18} />
-                            </div>
+                            {attachmentPreviewUrl ? (
+                                <img
+                                    src={attachmentPreviewUrl}
+                                    alt=""
+                                    className="attachment-image-preview"
+                                />
+                            ) : (
+                                <div className="attachment-icon">
+                                    <FileText size={18} />
+                                </div>
+                            )}
                             <div className="attachment-body">
                                 <div className="attachment-name" title={attachedFile.name}>{attachedFile.name}</div>
                                 <div className="attachment-meta-line">
                                     <span className="attachment-badge">{getFileExtension(attachedFile.name)}</span>
                                     <span>{formatFileSize(attachedFile.size)}</span>
-                                    <span>будет добавлен в запрос</span>
                                 </div>
                             </div>
                             <button
@@ -2062,45 +3328,24 @@ function ChatView({
                 <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".docx,.doc,.txt,.md,.py,.pdf,.xlsx,.xls,.pptx,.json,.csv,.xml,.html,.css,.js,.log"
+                    accept=".png,.jpg,.jpeg,.webp,.bmp,.docx,.doc,.txt,.md,.py,.pdf,.xlsx,.xls,.pptx,.json,.csv,.xml,.html,.css,.js,.log"
                     onChange={handleFileSelect}
                     className="hidden"
                 />
 
-                <form onSubmit={handleSend} className={`relative flex items-center w-full max-w-3xl mx-auto rounded-xl border overflow-hidden transition-all ${!isConnected ? 'opacity-50 pointer-events-none grayscale' : ''
-                    } ${isLightMode
-                        ? 'bg-white border-gray-300 focus-within:border-blue-500 focus-within:shadow-[0_0_0_1px_rgba(59,130,246,0.5)]'
-                        : 'bg-white/10 border-white/15 focus-within:border-white/30 focus-within:bg-white/15'
-                    }`}>
+                <form onSubmit={handleSend} className={`vera-workspace-composer ${!isConnected || !isAgentReady ? 'is-disconnected' : ''}`}>
                     <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        className={`pl-4 pr-1 transition-all cursor-pointer ${isLightMode
-                            ? (attachedFile ? 'text-blue-500' : 'text-gray-400 hover:text-gray-600')
-                            : (attachedFile ? 'text-white' : 'opacity-50 hover:opacity-80')
-                            }`}
+                        className={`vera-workspace-composer-tool ${attachedFile ? 'active' : ''}`}
                         title="Прикрепить файл"
                     >
                         <Paperclip size={18} />
                     </button>
                     <button
                         type="button"
-                        onClick={toggleMute}
-                        className={`pr-2 pl-1 transition-all cursor-pointer ${isLightMode
-                            ? (isMuted ? 'text-red-500 hover:text-red-600' : 'text-gray-400 hover:text-gray-600')
-                            : (isMuted ? 'text-red-400 hover:text-red-300' : 'opacity-50 hover:opacity-80')
-                            }`}
-                        title={isMuted ? "Включить микрофон" : "Выключить микрофон"}
-                    >
-                        {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-                    </button>
-                    <button
-                        type="button"
                         onClick={toggleThinking}
-                        className={`pr-2 pl-1 transition-all cursor-pointer ${isLightMode
-                            ? (thinkingEnabled ? 'text-blue-600 hover:text-blue-700' : 'text-gray-400 hover:text-gray-600')
-                            : (thinkingEnabled ? 'text-cyan-300 hover:text-cyan-200' : 'opacity-50 hover:opacity-80')
-                            }`}
+                        className={`vera-workspace-composer-tool ${thinkingEnabled ? 'active' : ''}`}
                         title={thinkingEnabled ? "Режим размышления включен" : "Режим размышления выключен"}
                     >
                         <Brain size={18} />
@@ -2109,28 +3354,54 @@ function ChatView({
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder={attachedFile ? "Задайте вопрос по файлу..." : "Спросите или попросите о чем-либо..."}
-                        className={`flex-1 bg-transparent border-none py-3.5 px-2 text-[15px] focus:outline-none focus:ring-0 ${isLightMode
-                            ? 'text-gray-900 placeholder:text-gray-400'
-                            : 'text-white placeholder:text-white/30'
-                            }`}
+                        placeholder={attachedFile ? "Спросите о прикреплённом файле..." : "Написать сообщение..."}
+                        className="vera-workspace-composer-input"
+                        disabled={!isAgentReady}
                     />
                     <button
-                        type="submit"
-                        disabled={(!input.trim() && !attachedFile) || isUploading}
-                        className={`pr-4 pl-2 transition-all ${isLightMode
-                            ? 'text-blue-500 hover:text-blue-600 disabled:opacity-50 disabled:text-gray-400 disabled:hover:text-gray-400'
-                            : 'text-white/50 hover:text-white disabled:opacity-30 disabled:hover:text-white/50'
-                            }`}
+                        type="button"
+                        onClick={toggleMute}
+                        className="vera-workspace-mic-button"
+                        title={isMuted ? "Включить микрофон" : "Выключить микрофон"}
+                        aria-label={isMuted ? "Включить микрофон" : "Выключить микрофон"}
                     >
-                        {isUploading ? (
-                            <div className={`w-4 h-4 border-2 rounded-full animate-spin ${isLightMode ? 'border-blue-300 border-t-blue-600' : 'border-white/20 border-t-white'
-                                }`} />
-                        ) : (
-                            <Send size={18} />
-                        )}
+                        {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
                     </button>
                 </form>
+            </div>
+            <div className="vera-workspace-statusbar no-drag-region">
+                <button
+                    type="button"
+                    className="vera-workspace-status-action"
+                    onClick={() => openSettingsSection('automation')}
+                    title="Периодические задачи"
+                >
+                    <Clock3 size={11} />
+                    <span>Cron</span>
+                </button>
+                <div className="vera-workspace-status-spacer" />
+                <span className="vera-workspace-runtime-model" title={runtimeInfo.model_path}>
+                    {runtimeInfo.model_name}
+                </span>
+                <span className="vera-workspace-runtime-version">v{runtimeInfo.version}</span>
+                <button
+                    type="button"
+                    className={`vera-workspace-log-toggle ${logsOpen ? 'active' : ''}`}
+                    onClick={() => setLogsOpen(value => !value)}
+                    title={logsOpen ? 'Скрыть логи' : 'Показать логи'}
+                    aria-label={logsOpen ? 'Скрыть логи' : 'Показать логи'}
+                    aria-expanded={logsOpen}
+                >
+                    <TerminalSquare size={11} />
+                </button>
+            </div>
+            </main>
+            {workspacePanelOpen && (
+                <WorkspacePanel
+                    mode={workspacePanelMode}
+                    onModeChange={setWorkspacePanelMode}
+                />
+            )}
             </div>
 
         </div>

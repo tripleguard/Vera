@@ -51,7 +51,8 @@ DEFAULT_CONFIG = {
     "tts": {
         "voice_name": "Lily",
         "total_steps": 4,
-        "volume": 0.8,
+        "volume": 50,
+        "volume_scale": "percent_v2",
         "speed": 1.15,
     },
     "commands": {},
@@ -89,6 +90,7 @@ DEFAULT_CONFIG = {
 }
 
 _DEFAULT_DATA_FILES = [
+    "CORE.md",
     "IDENTITY.md",
     "SOUL.md",
     "TOOLS.md",
@@ -115,6 +117,12 @@ _MUTABLE_DIRS = [
 ]
 
 _FALLBACK_TEXT = {
+    "CORE.md": (
+        "# Core\n\n"
+        "Ты Вера, локальный персональный помощник. Говори о себе в женском роде.\n\n"
+        "Отвечай естественно, кратко и по делу. Используй только предоставленные "
+        "инструменты и не выдумывай результаты действий.\n"
+    ),
     "IDENTITY.md": "# Identity\n\nYou are Vera voice assistant.\n",
     "SOUL.md": "# Soul\n\nBe concise, helpful, and safe.\n",
     "TOOLS.md": "# Tools\n\nUse available tools when needed.\n",
@@ -372,8 +380,33 @@ class ConfigManager:
 
         with self._config_path.open(encoding="utf-8-sig") as f:
             self._raw_config = json.load(f)
+            migrated = self._normalize_tts_config(self._raw_config)
             self._config = copy.deepcopy(self._raw_config)
             logger.info("Configuration loaded from %s", self._config_path)
+        if migrated:
+            self.save()
+
+    @staticmethod
+    def _normalize_tts_config(config: dict) -> bool:
+        tts = config.setdefault("tts", {})
+        raw_volume = tts.get("volume", DEFAULT_CONFIG["tts"]["volume"])
+        try:
+            volume = float(raw_volume)
+        except (TypeError, ValueError):
+            volume = float(DEFAULT_CONFIG["tts"]["volume"])
+
+        scale = str(tts.get("volume_scale", "") or "")
+        if scale != "percent_v2":
+            if 0 < volume <= 1:
+                volume *= 100
+            elif 1 < volume <= 15:
+                volume = (volume / 15) * 100
+
+        volume = round(max(0.0, min(100.0, volume)))
+        changed = raw_volume != volume or scale != "percent_v2"
+        tts["volume"] = volume
+        tts["volume_scale"] = "percent_v2"
+        return changed
 
     def reload(self) -> None:
         self._config = None
@@ -400,7 +433,9 @@ class ConfigManager:
 
     def set_all(self, new_config: dict) -> None:
         self._raw_config = copy.deepcopy(new_config)
+        self._normalize_tts_config(self._raw_config)
         self._config = copy.deepcopy(new_config)
+        self._normalize_tts_config(self._config)
 
     def set(self, *keys: str, value: Any) -> None:
         if self._config is None:

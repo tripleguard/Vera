@@ -105,6 +105,7 @@ class LlamaServer:
         extra_args: Optional[List[str]] = None,
     ):
         self.model_path = self._resolve_model_path()
+        self.mmproj_path = self._resolve_mmproj_path()
         self.ctx_size = ctx_size
         self.port = port
         self.host = host
@@ -152,6 +153,8 @@ class LlamaServer:
             "--jinja",
             "--fit", "off",
         ]
+        if self.mmproj_path:
+            cmd.extend(["--mmproj", str(self.mmproj_path)])
         cmd.extend(self.extra_args)
 
         print(f"[LLM_SERVER] Запуск: {' '.join(cmd)}")
@@ -238,11 +241,17 @@ class LlamaServer:
 
         # Fallback: ручной поиск если в конфиге пусто
         project_root = get_install_root()
-        gguf_files = sorted(project_root.glob("*.gguf"))
+        gguf_files = sorted(
+            path for path in project_root.glob("*.gguf")
+            if not path.name.lower().startswith("mmproj")
+        )
         if not gguf_files:
             # Also check parent dirs (for Inno Setup layout)
             for parent in project_root.parents:
-                gguf_files = sorted(parent.glob("*.gguf"))
+                gguf_files = sorted(
+                    path for path in parent.glob("*.gguf")
+                    if not path.name.lower().startswith("mmproj")
+                )
                 if gguf_files:
                     break
                 if parent == project_root.parent.parent:
@@ -254,6 +263,24 @@ class LlamaServer:
         chosen = gguf_files[0]
         print(f"[LLM_SERVER] Авто-определение модели: {chosen.name}")
         return chosen.resolve()
+
+    def _resolve_mmproj_path(self) -> Optional[Path]:
+        """Find a local multimodal projector next to the selected model."""
+        search_dirs = [self.model_path.parent, get_install_root()]
+        seen = set()
+        candidates: List[Path] = []
+        for directory in search_dirs:
+            resolved = directory.resolve()
+            if resolved in seen or not resolved.exists():
+                continue
+            seen.add(resolved)
+            candidates.extend(sorted(resolved.glob("mmproj*.gguf")))
+        if not candidates:
+            print("[LLM_SERVER] Multimodal projector not found; vision input is disabled.")
+            return None
+        chosen = candidates[0].resolve()
+        print(f"[LLM_SERVER] Multimodal projector: {chosen.name}")
+        return chosen
 
     def _find_executable(self) -> Optional[Path]:
         """Ищет llama-server.exe в папке проекта и подпапках."""
@@ -352,7 +379,7 @@ class LlamaClient:
 
     def create_chat_completion(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """

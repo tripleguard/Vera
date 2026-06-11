@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell } = require('electron');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
@@ -7,6 +7,8 @@ const crypto = require('crypto');
 let widgetWindow;
 let chatWindow;
 let pythonProcess = null;
+let terminalProcess = null;
+let terminalWorkingDirectory = null;
 let tray = null;
 
 const apiToken = crypto.randomBytes(32).toString('hex');
@@ -55,6 +57,17 @@ function broadcastTheme(themeId, excludeSender = null) {
     }
 }
 
+function getChatBackgroundColor(themeId) {
+    const colors = {
+        obsidian: '#171b22',
+        daylight: '#f5f5f7',
+        terminal: '#07100b',
+        sakura: '#fff5f8',
+        graphite: '#1c2027',
+    };
+    return colors[themeId] || colors.obsidian;
+}
+
 
 function killProcessTree(pid) {
     if (!pid) {
@@ -96,6 +109,57 @@ function stopPythonBackend() {
         killProcessTree(pythonProcess.pid);
     }
     pythonProcess = null;
+}
+
+function sendTerminalEvent(channel, payload) {
+    if (chatWindow && !chatWindow.isDestroyed()) {
+        chatWindow.webContents.send(channel, payload);
+    }
+}
+
+function stopTerminal() {
+    if (!terminalProcess) {
+        return;
+    }
+    const processToStop = terminalProcess;
+    terminalProcess = null;
+    terminalWorkingDirectory = null;
+    if (processToStop.pid) {
+        killProcessTree(processToStop.pid);
+    }
+}
+
+function startTerminal(cwd) {
+    if (terminalProcess && !terminalProcess.killed) {
+        return { running: true, cwd: terminalWorkingDirectory };
+    }
+
+    const terminalCwd = cwd && fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()
+        ? cwd
+        : app.getPath('home');
+    const command = process.env.ComSpec || 'cmd.exe';
+
+    terminalProcess = spawn(command, ['/D', '/Q', '/K', 'chcp 65001>nul'], {
+        cwd: terminalCwd,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    terminalWorkingDirectory = terminalCwd;
+
+    terminalProcess.stdout.setEncoding('utf8');
+    terminalProcess.stderr.setEncoding('utf8');
+    terminalProcess.stdout.on('data', data => sendTerminalEvent('terminal-output', String(data)));
+    terminalProcess.stderr.on('data', data => sendTerminalEvent('terminal-output', String(data)));
+    terminalProcess.on('error', error => {
+        sendTerminalEvent('terminal-output', `\r\n[Terminal error] ${error.message}\r\n`);
+    });
+    terminalProcess.on('close', code => {
+        terminalProcess = null;
+        terminalWorkingDirectory = null;
+        sendTerminalEvent('terminal-exit', { code });
+    });
+
+    return { running: true, cwd: terminalCwd };
 }
 
 function restartPythonBackendNow() {
@@ -188,9 +252,10 @@ function startPythonBackend() {
         },
     });
 
-    pythonProcess.stdout.on('data', (data) => console.log(`[Python]: ${data.toString('utf8')}`));
-    pythonProcess.stderr.on('data', (data) => {
-        const stderrText = data.toString('utf8');
+    pythonProcess.stdout.setEncoding('utf8');
+    pythonProcess.stderr.setEncoding('utf8');
+    pythonProcess.stdout.on('data', (data) => console.log(`[Python]: ${data}`));
+    pythonProcess.stderr.on('data', (stderrText) => {
         console.error(`[Python Err]: ${stderrText}`);
 
         const normalized = stderrText.toLowerCase();
@@ -254,26 +319,62 @@ function createWindows() {
         resizable: false,
         icon: iconPath,
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
+            preload: path.join(__dirname, 'preload.js'),
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
         },
     });
 
     chatWindow = new BrowserWindow({
-        width: 800,
-        height: 600,
+        width: 1280,
+        height: 760,
+        minWidth: 980,
+        minHeight: 640,
         show: false,
         frame: false,
-        transparent: true,
-        backgroundColor: '#00000000',
+        transparent: false,
+        backgroundColor: getChatBackgroundColor('obsidian'),
         icon: iconPath,
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
+            preload: path.join(__dirname, 'preload.js'),
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
         },
     });
 
     chatWindow.center();
+
+    const sendWindowState = () => {
+        setTimeout(() => {
+            if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('window-state-changed', {
+                    isMaximized: chatWindow.isMaximized(),
+                    isFullScreen: chatWindow.isFullScreen()
+                });
+            }
+        }, 100);
+    };
+
+    chatWindow.on('maximize', sendWindowState);
+    chatWindow.on('unmaximize', sendWindowState);
+    chatWindow.on('enter-full-screen', sendWindowState);
+    chatWindow.on('leave-full-screen', sendWindowState);
+    chatWindow.webContents.on('did-finish-load', sendWindowState);
+    chatWindow.webContents.on('before-input-event', (event, input) => {
+        const isNewSessionShortcut = (
+            input.type === 'keyDown'
+            && !input.isAutoRepeat
+            && (input.control || input.meta)
+            && String(input.key || '').toLowerCase() === 'n'
+        );
+        if (isNewSessionShortcut) {
+            event.preventDefault();
+            chatWindow.webContents.send('new-session-shortcut');
+        }
+    });
+
     chatWindow.on('close', (e) => {
         if (!isQuitting) {
             isQuitting = true;
@@ -289,8 +390,8 @@ function createWindows() {
     });
 
     if (!app.isPackaged) {
-        widgetWindow.loadURL('http://localhost:5173/#/widget');
-        chatWindow.loadURL('http://localhost:5173/#/chat');
+        widgetWindow.loadURL('http://127.0.0.1:5173/#/widget');
+        chatWindow.loadURL('http://127.0.0.1:5173/#/chat');
     } else {
         widgetWindow.loadFile(rendererIndexPath, { hash: '/widget' });
         chatWindow.loadFile(rendererIndexPath, { hash: '/chat' });
@@ -342,10 +443,153 @@ if (!gotSingleInstanceLock) {
         createWindows();
         setupTrayIcon();
 
-        ipcMain.handle('get-api-token', () => apiToken);
         ipcMain.on('get-api-token-sync', (event) => {
             event.returnValue = apiToken;
         });
+
+        ipcMain.handle('workspace-select-directory', async () => {
+            const result = await dialog.showOpenDialog(chatWindow, {
+                title: 'Выберите рабочую папку',
+                properties: ['openDirectory'],
+            });
+            if (result.canceled || result.filePaths.length === 0) {
+                return null;
+            }
+            return result.filePaths[0];
+        });
+
+        ipcMain.handle('workspace-list-directory', async (_event, directoryPath) => {
+            if (typeof directoryPath !== 'string' || !fs.existsSync(directoryPath)) {
+                throw new Error('Directory does not exist');
+            }
+            const stats = await fs.promises.stat(directoryPath);
+            if (!stats.isDirectory()) {
+                throw new Error('Path is not a directory');
+            }
+            const entries = await fs.promises.readdir(directoryPath, { withFileTypes: true });
+            const items = await Promise.all(entries.map(async entry => {
+                const entryPath = path.join(directoryPath, entry.name);
+                let size = 0;
+                try {
+                    if (entry.isFile()) {
+                        size = (await fs.promises.stat(entryPath)).size;
+                    }
+                } catch {
+                    // The entry may disappear while the directory is being read.
+                }
+                return {
+                    name: entry.name,
+                    path: entryPath,
+                    isDirectory: entry.isDirectory(),
+                    size,
+                };
+            }));
+            return items.sort((left, right) => {
+                if (left.isDirectory !== right.isDirectory) {
+                    return left.isDirectory ? -1 : 1;
+                }
+                return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+            });
+        });
+
+        ipcMain.handle('workspace-read-file', async (_event, filePath) => {
+            if (typeof filePath !== 'string' || !fs.existsSync(filePath)) {
+                throw new Error('File does not exist');
+            }
+            const stats = await fs.promises.stat(filePath);
+            if (!stats.isFile()) {
+                throw new Error('Path is not a file');
+            }
+            const data = await fs.promises.readFile(filePath);
+            return {
+                name: path.basename(filePath),
+                size: stats.size,
+                data,
+            };
+        });
+
+        ipcMain.handle('workspace-open-file', async (_event, filePath) => {
+            if (typeof filePath !== 'string' || !fs.existsSync(filePath)) {
+                throw new Error('File does not exist');
+            }
+            const errorMessage = await shell.openPath(filePath);
+            if (errorMessage) {
+                throw new Error(errorMessage);
+            }
+            return true;
+        });
+
+        ipcMain.handle('open-external-url', async (_event, url) => {
+            if (typeof url !== 'string') {
+                throw new Error('Invalid URL');
+            }
+            const parsedUrl = new URL(url);
+            if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+                throw new Error('Unsupported URL protocol');
+            }
+            await shell.openExternal(parsedUrl.toString());
+        });
+
+        ipcMain.handle('workspace-reveal-item', (_event, itemPath) => {
+            if (typeof itemPath !== 'string') {
+                throw new Error('Path does not exist');
+            }
+            let resolvedPath = itemPath.trim().replace(/\s+\([^)]*\)\s*$/, '');
+            if (!fs.existsSync(resolvedPath)) {
+                const projectsCandidate = path.join(
+                    app.getPath('documents'),
+                    'Vera',
+                    'Projects',
+                    path.basename(resolvedPath),
+                );
+                if (fs.existsSync(projectsCandidate)) {
+                    resolvedPath = projectsCandidate;
+                }
+            }
+            if (!fs.existsSync(resolvedPath)) {
+                throw new Error('Path does not exist');
+            }
+            shell.showItemInFolder(resolvedPath);
+            return true;
+        });
+
+        ipcMain.handle('projects-list', async () => {
+            const veraDocumentsPath = path.join(app.getPath('documents'), 'Vera');
+            const projectsPath = path.join(veraDocumentsPath, 'Projects');
+            await fs.promises.mkdir(projectsPath, { recursive: true });
+            const legacyEntries = await fs.promises.readdir(veraDocumentsPath, { withFileTypes: true });
+            for (const entry of legacyEntries) {
+                if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.pptx')) continue;
+                const sourcePath = path.join(veraDocumentsPath, entry.name);
+                const targetPath = path.join(projectsPath, entry.name);
+                if (!fs.existsSync(targetPath)) {
+                    await fs.promises.rename(sourcePath, targetPath);
+                }
+            }
+            const entries = await fs.promises.readdir(projectsPath, { withFileTypes: true });
+            const projects = await Promise.all(entries
+                .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.pptx'))
+                .map(async entry => {
+                    const filePath = path.join(projectsPath, entry.name);
+                    const stats = await fs.promises.stat(filePath);
+                    return {
+                        name: entry.name,
+                        path: filePath,
+                        size: stats.size,
+                        updatedAt: stats.mtimeMs,
+                    };
+                }));
+            return projects.sort((left, right) => right.updatedAt - left.updatedAt);
+        });
+
+        ipcMain.handle('terminal-start', (_event, cwd) => startTerminal(cwd));
+        ipcMain.on('terminal-input', (_event, input) => {
+            if (!terminalProcess || terminalProcess.killed || typeof input !== 'string') {
+                return;
+            }
+            terminalProcess.stdin.write(input);
+        });
+        ipcMain.on('terminal-stop', stopTerminal);
 
         let toggleLock = false;
         ipcMain.on('toggle-chat', () => {
@@ -360,7 +604,6 @@ if (!gotSingleInstanceLock) {
             } else {
                 chatWindow.setOpacity(0);
                 focusChatWindow();
-
                 let opacity = 0;
                 const fadeIn = setInterval(() => {
                     opacity += 0.2;
@@ -377,6 +620,30 @@ if (!gotSingleInstanceLock) {
             if (chatWindow) {
                 chatWindow.hide();
             }
+        });
+
+        ipcMain.on('minimize-chat', () => {
+            if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.minimize();
+            }
+        });
+
+        ipcMain.on('toggle-chat-fullscreen', () => {
+            if (chatWindow && !chatWindow.isDestroyed()) {
+                if (chatWindow.isFullScreen()) {
+                    chatWindow.setFullScreen(false);
+                } else if (chatWindow.isMaximized()) {
+                    chatWindow.unmaximize();
+                } else {
+                    chatWindow.setFullScreen(true);
+                }
+            }
+        });
+
+        ipcMain.on('quit-app', () => {
+            isQuitting = true;
+            stopPythonBackend();
+            app.quit();
         });
 
         ipcMain.on('restart-app', () => {
@@ -400,6 +667,9 @@ if (!gotSingleInstanceLock) {
         });
 
         ipcMain.on('theme-updated', (event, themeId) => {
+            if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.setBackgroundColor(getChatBackgroundColor(themeId));
+            }
             broadcastTheme(themeId, event.sender);
         });
     });
@@ -413,5 +683,6 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
     isQuitting = true;
+    stopTerminal();
     stopPythonBackend();
 });

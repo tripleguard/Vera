@@ -13,12 +13,6 @@ _WEB_SUMMARY_PROMPT = (
     "Дай краткий, точный ответ на вопрос пользователя на основе контекста."
 )
 
-_WEB_DETAILED_PROMPT = (
-    "Тебе дан контекст из веб-поиска. "
-    "Напиши МАКСИМАЛЬНО подробный, развернутый и информативный ответ "
-    "на основе этого контекста. Включи все важные факты, даты и детали."
-)
-
 _SEARCH_CACHE: "OrderedDict[str, tuple[float, str, list[str]]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 
@@ -87,7 +81,7 @@ def execute_wikipedia_command(text: str) -> Optional[str]:
         return None
     return None
 
-def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_search_urls: list, detailed: bool = False) -> str:
+def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_search_urls: list) -> str:
     headers = get_default_headers()
     log_page_errors = bool(web_cfg.get("log_page_errors", False))
     web_max_sources = int(web_cfg.get("max_sources", 5))
@@ -195,10 +189,9 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
         )
 
 
-    prompt_to_use = _WEB_DETAILED_PROMPT if detailed else _WEB_SUMMARY_PROMPT
     extra_text = (" " + " ".join(extra_rules)) if extra_rules else ""
     messages = [
-        {"role": "system", "content": f"{prompt_to_use} Отвечай ТОЛЬКО по контексту. Не выдумывай.{extra_text}"},
+        {"role": "system", "content": f"{_WEB_SUMMARY_PROMPT} Отвечай ТОЛЬКО по контексту. Не выдумывай.{extra_text}"},
         {"role": "user", "content": f"Вопрос: {query}\nКонтекст:\n{context}\n\nОтвет:"},
     ]
 
@@ -206,11 +199,7 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
     gen_args["chat_template_kwargs"] = {"enable_thinking": False}
     gen_args["reasoning_budget"] = 0
     
-    # Расширяем лимит для детальных ответов
-    if detailed:
-        mt = 1500
-    else:
-        mt = int(web_cfg.get("llm_max_tokens", 128))
+    mt = int(web_cfg.get("llm_max_tokens", 128))
         
     if mt > 0:
         gen_args["max_tokens"] = mt

@@ -10,6 +10,11 @@ from urllib.parse import urlparse, quote_plus, parse_qs
 
 from web.http_client import http as requests
 
+try:
+    import trafilatura
+except ImportError:
+    trafilatura = None
+
 
 def relevance_score(query: str, text: str) -> int:
     """Вычисляет релевантность текста запросу."""
@@ -178,6 +183,25 @@ def search_brave(query: str, max_results: int = 6) -> List[str]:
 
 def extract_visible_text(html: str) -> str:
     """Извлекает читаемый текст из HTML, очищая от меню и кнопок."""
+    if trafilatura is not None:
+        try:
+            markdown = trafilatura.extract(
+                html,
+                output_format="markdown",
+                include_comments=False,
+                include_tables=True,
+                include_links=True,
+                include_images=False,
+                deduplicate=True,
+                favor_precision=True,
+            )
+            if markdown:
+                markdown = re.sub(r"\n{3,}", "\n\n", markdown).strip()
+                if len(markdown.split()) >= 12:
+                    return markdown
+        except Exception:
+            pass
+
     soup = BeautifulSoup(html, "html.parser")
     
     # Удаляем нерелевантные элементы
@@ -192,8 +216,14 @@ def extract_visible_text(html: str) -> str:
     
     root = soup.find("main") or soup.find("article") or soup.body or soup
     
-    # Извлекаем текст, разделённый переносами строк
-    raw_lines = root.get_text(separator="\n", strip=True).split("\n")
+    # Keep inline links inside their paragraph instead of splitting sentences.
+    content_blocks = root.find_all(
+        ["h1", "h2", "h3", "h4", "p", "li", "blockquote", "pre", "td", "th"]
+    )
+    if content_blocks:
+        raw_lines = [block.get_text(separator=" ", strip=True) for block in content_blocks]
+    else:
+        raw_lines = root.get_text(separator="\n", strip=True).split("\n")
     
     good_lines = []
     for line in raw_lines:
@@ -202,11 +232,11 @@ def extract_visible_text(html: str) -> str:
             continue
         # Эвристика: оставляем строки, где >= 4 слов, либо есть знаки препинания в конце
         words = line.split()
-        if len(words) >= 4 or (len(words) >= 2 and line[-1] in ".?!:,"):
+        if len(words) >= 3 or (len(words) >= 2 and line[-1] in ".?!:,"):
             good_lines.append(line)
             
-    text = " ".join(good_lines)
-    return re.sub(r"\s+", " ", text).strip()
+    text = "\n\n".join(good_lines)
+    return re.sub(r"[ \t]+", " ", text).strip()
 
 
 def _fetch_page(url: str, timeout: float = 5.0, max_bytes: int = 70000, per_page_limit: int = 1500, log_errors: bool = False) -> Tuple[str, str]:

@@ -36,7 +36,8 @@
     "tts":  {
                 "voice_name": "Lily",
                 "total_steps": 4,
-                "volume": 0.8,
+    "volume": 50,
+    "volume_scale": "percent_v2",
                 "speed": 1.15
             },
     "sites":  {

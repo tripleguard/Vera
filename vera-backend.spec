@@ -7,24 +7,10 @@ PyInstaller spec-файл для сборки vera-backend.exe
 """
 
 import os
-import sys
-from pathlib import Path
 
 block_cipher = None
 
 PROJECT_ROOT = os.path.abspath('.')
-
-# Find the venv site-packages for package resolution
-VENV_DIRS = [
-    os.path.join(PROJECT_ROOT, 'venv'),
-    os.path.join(PROJECT_ROOT, '.venv'),
-]
-VENV_SITE_PACKAGES = None
-for vdir in VENV_DIRS:
-    sp = os.path.join(vdir, 'Lib', 'site-packages')
-    if os.path.isdir(sp):
-        VENV_SITE_PACKAGES = sp
-        break
 
 # ── Скрытые импорты ──
 # PyInstaller не всегда находит динамические импорты —
@@ -82,12 +68,10 @@ hidden_imports = [
     'win32com.shell.shell',
     'pythoncom',
     'pywintypes',
-    'wmi',
     'psutil',
 
     # Windows notifications
     'win11toast',
-    'winrt',
 
     # Screen brightness
     'screen_brightness_control',
@@ -113,59 +97,13 @@ hidden_imports = [
     'requests',
     'bs4',
 
-    # Проектные модули
-    'main',
-    'main.agent',
-    'main.config_manager',
-    'main.llm_server',
-    'main.tool_definitions',
-    'main.prompt_builder',
-    'main.executor',
-    'main.planner',
-    'main.reflector',
-    'main.lang_ru',
-    'main.file_indexer',
-    'main.app_indexer',
-    'main.result_patterns',
-    'main.safety',
-    'main.audit',
-    'main.utils',
-    'main.utils.fuzzy',
-    'main.commands',
-    'main.commands.app_control',
-    'main.commands.file_operations',
-    'main.commands.heartbeat_commands',
-    'main.commands.power_manager',
-    'main.commands.recyclebin_commands',
-    'main.commands.scheduler_base',
-    'main.commands.sound_media',
-    'main.commands.system_control',
-    'main.commands.time_commands',
-    'main.commands.web_commands',
-    'main.commands.window_manager',
-    'main.tools',
-    'main.tools.code_interpreter',
-    'main.tools.document_generator',
-    'main.tools.presentation_generator',
-    'main.tools.read_document',
-    'main.tools.telegram',
-    'main.tools.telegram_mode',
-    'web',
-    'web.web_search',
-    'web.web_utils',
-    'web.weather',
-    'web.currency',
-    'user',
-    'user.memory',
-    'user.memory_extractor',
-    'user.json_storage',
-    'user.notifications',
 ]
 
 # ── Файлы данных ──
 # Шаблоны данных, которые копируются при первом запуске
 datas = [
     # Шаблоны конфигурации/данных
+    (os.path.join('data', 'CORE.md'), os.path.join('data')),
     (os.path.join('data', 'IDENTITY.md'), os.path.join('data')),
     (os.path.join('data', 'SOUL.md'), os.path.join('data')),
     (os.path.join('data', 'TOOLS.md'), os.path.join('data')),
@@ -175,6 +113,8 @@ datas = [
     (os.path.join('data', 'heartbeat_tasks.json'), os.path.join('data')),
     (os.path.join('data', 'reminders.json'), os.path.join('data')),
     (os.path.join('data', 'scheduled_apps.json'), os.path.join('data')),
+    (os.path.join('skills', 'presentations', 'SKILL.md'), os.path.join('skills', 'presentations')),
+    (os.path.join('skills', 'documents', 'SKILL.md'), os.path.join('skills', 'documents')),
     # Звуковые файлы
     ('timer.mp3', '.'),
     # Иконка
@@ -186,7 +126,7 @@ binaries = []
 
 a = Analysis(
     ['server.py'],
-    pathex=[p for p in [PROJECT_ROOT, VENV_SITE_PACKAGES] if p],
+    pathex=[PROJECT_ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hidden_imports,

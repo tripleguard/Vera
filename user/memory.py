@@ -4,7 +4,7 @@
 Формат хранения: JSON (`data/memory.json`) — структурированный, с категориями,
 пинами, временными метками. Обратная совместимость с `MEMORY.md` через миграцию.
 
-Архитектура (как у Odysseus, но без векторного поиска — для маленьких моделей):
+Архитектура памяти без векторного поиска, оптимизированная для маленьких моделей:
 - Профиль: key→value (≤10 полей).
 - Факты: [{id, text, category, pinned, timestamp, source}, ...] (≤20 фактов).
 - Гибридный score: 0.50 * BM25 + 0.30 * recency + 0.20 * category_boost.
@@ -451,9 +451,9 @@ class MemoryManager:
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:k]
 
-    # === Контекст для промпта (как у Odysseus, упрощённо) ===
+    # === Компактный контекст памяти для системного промпта ===
 
-    def get_context_for_prompt(self) -> str:
+    def get_context_for_prompt(self, query_text: Optional[str] = None) -> str:
         """
         Возвращает контекст для system prompt: pinned факты + top-3 recalled.
         Cap = MAX_CONTEXT_LENGTH символов. Pinned никогда не обрезаются.
@@ -490,7 +490,7 @@ class MemoryManager:
 
         # === Блок 3: Top-K recalled факты (BM25+recency+category) ===
         # Собираем кандидатов из не-pinned, чтобы не дублировать
-        last_user_msg = self._last_user_message()
+        last_user_msg = str(query_text or "").strip() or self._last_user_message()
         if last_user_msg and current_length < MAX_CONTEXT_LENGTH:
             try:
                 hits = self.search(last_user_msg, k=3)

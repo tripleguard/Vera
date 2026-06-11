@@ -5,12 +5,14 @@ import queue
 import threading
 import sys
 import time
+from contextvars import ContextVar
 from array import array
 from typing import Any, Callable, Dict, Optional
 import difflib
 import sounddevice as sd
 import sherpa_onnx
 from supertonic import TTS
+from main.audio_utils import apply_tts_volume
 from main.llm_server import LlamaServer, LlamaClient
 import msvcrt
 from functools import partial
@@ -24,27 +26,49 @@ from .commands import start_heartbeat_scheduler, set_heartbeat_speak_callback, s
 from .commands.time_commands import start_scheduler
 from user.memory import MemoryManager
 from user.memory_extractor import extract_facts, should_extract_facts, extract_from_remember_command
+from user.session_store import SessionStore
 
 from .tools import TOOLS
-from .tool_definitions import TOOL_DEFINITIONS
-from .tools.presentation_generator import is_presentation_request, execute_presentation_creation
-from .tools.document_generator import create_pptx
+from .tool_definitions import TOOL_DEFINITIONS_BY_NAME, get_tool_definitions
+from .tool_router import route_intent
+from .tools.presentation_generator import execute_presentation_creation
+from .tools.text_document_generator import execute_text_document_creation
+from .tools.document_generator import create_docx, create_md, create_pptx, create_txt
 from .prompt_builder import build_system_prompt, reload_prompt, get_prompt_status
 from .audit import get_audit_logger
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 _ws_out_queue: "queue.Queue[dict]" = queue.Queue()
+_current_session_id: ContextVar[Optional[str]] = ContextVar("vera_session_id", default=None)
+_current_task_id: ContextVar[Optional[str]] = ContextVar("vera_task_id", default=None)
 
 def _send_ws(msg: dict):
-    """Отправка сообщения в UI через внутреннюю очередь, которую читает сервер"""
-    _ws_out_queue.put(msg)
+    """Send an event tagged with the active session/task when available."""
+    payload = dict(msg)
+    session_id = _current_session_id.get()
+    task_id = _current_task_id.get()
+    if session_id and "session_id" not in payload:
+        payload["session_id"] = session_id
+    if task_id and "task_id" not in payload:
+        payload["task_id"] = task_id
+    _ws_out_queue.put(payload)
 
 _mic_muted = False
 _mic_muted_lock = threading.Lock()  # Lock для thread-safe доступа к _mic_muted
 _shutdown_event = threading.Event()  # Event для graceful shutdown
+_tts_ready_event = threading.Event()
+_agent_ready_event = threading.Event()
+
+
+def get_agent_readiness() -> dict:
+    return {
+        "ready": _agent_ready_event.is_set(),
+        "tts_ready": _tts_ready_event.is_set(),
+    }
 
 _task_seq_lock = threading.Lock()
 _task_seq = 0
@@ -59,8 +83,15 @@ def _next_task_id() -> str:
         return f"task-{_task_seq}"
 
 
-def _emit_task_status(task_id: str, state: str, extra: Optional[Dict[str, Any]] = None):
+def _emit_task_status(
+    task_id: str,
+    state: str,
+    extra: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+):
     payload: Dict[str, Any] = {"type": "task_status", "task_id": task_id, "state": state}
+    if session_id:
+        payload["session_id"] = session_id
     if extra:
         payload.update(extra)
     _send_ws(payload)
@@ -220,34 +251,16 @@ def _telegram_route_command(text: str) -> str:
     if _WHO_ARE_YOU_RE.search(lowered):
         return "Я Вера, твой агент-помощник. Могу отвечать на вопросы и помогать с задачами."
 
-    # Презентации — создаём и передаём маркер файла для отправки в Telegram
-    if is_presentation_request(text):
-        msg, file_path = execute_presentation_creation(
-            text=text,
-            llm=llm,
-            web_search_func=_web_search_for_presentation,
-            create_pptx_func=create_pptx
-        )
+    intent = route_intent(text)
+    if intent.skill:
+        msg, file_path, _tool_name = _execute_skill_request(intent.skill, text)
         if file_path:
             return f"__FILE__{file_path}__ENDFILE__{msg}"
         return msg
 
-    for h in HANDLERS_WITH_MANAGERS:
-        try:
-            res = h(text)
-        except Exception as e:
-            print(f"[TG_ROUTE] handler: {e}")
-            res = None
-        if res is not None:
-            return res
-    for h in (execute_currency_command, execute_weather_command, execute_wikipedia_command):
-        try:
-            res = h(text)
-        except Exception as e:
-            print(f"[TG_ROUTE] {h.__name__}: {e}")
-            res = None
-        if res is not None:
-            return res
+    handled = _run_deterministic_handlers(text, include_system=False, log_prefix="TG_ROUTE")
+    if handled is not None:
+        return handled
     # В Telegram-режиме обычный диалог ведём без tool-calling, чтобы LLM не запускала
     # create_document/read_document на простых сообщениях.
     return ask_llm(text, source="telegram", allow_tools=False)
@@ -319,8 +332,12 @@ def queue_command(
     source: str,
     file_name: Optional[str] = None,
     file_context: Optional[str] = None,
+    image_data_url: Optional[str] = None,
+    image_preview_data_url: Optional[str] = None,
+    file_size: Optional[int] = None,
     bypass_confirmation: bool = False,
     task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ):
     task_id = task_id or _next_task_id()
     payload = {
@@ -329,13 +346,23 @@ def queue_command(
         "source": source,
         "file_name": file_name,
         "file_context": file_context,
+        "image_data_url": image_data_url,
+        "image_preview_data_url": image_preview_data_url,
+        "file_size": file_size,
         "bypass_confirmation": bool(bypass_confirmation),
+        "session_id": session_id,
     }
     _command_queue.put(payload)
-    _emit_task_status(task_id, "queued", {"source": source})
+    _emit_task_status(task_id, "queued", {"source": source}, session_id=session_id)
     audit_logger.write_event(
         "task.queued",
-        {"task_id": task_id, "source": source, "text": text, "bypass_confirmation": bool(bypass_confirmation)},
+        {
+            "task_id": task_id,
+            "session_id": session_id,
+            "source": source,
+            "text": text,
+            "bypass_confirmation": bool(bypass_confirmation),
+        },
     )
     return task_id
 
@@ -550,6 +577,7 @@ def _tts_worker():
             print("[TTS] Инициализация Supertonic TTS...")
             tts = TTS(auto_download=True)
             print("[TTS] Supertonic TTS успешно инициализирован.")
+            _tts_ready_event.set()
             
             retry_count = 0
             
@@ -566,7 +594,9 @@ def _tts_worker():
                                 # Динамически читаем настройки TTS при каждом запросе
                                 voice_name = config.get("tts", "voice_name", default="Lily")
                                 total_steps = int(config.get("tts", "total_steps", default=4))
-                                volume = float(config.get("tts", "volume", default=0.8))
+                                volume = max(0.0, min(100.0, float(
+                                    config.get("tts", "volume", default=50.0)
+                                )))
                                 speed = float(config.get("tts", "speed", default=1.15))
 
                                 voice_map = {
@@ -589,9 +619,7 @@ def _tts_worker():
                                 )
                                 duration = float(duration[0]) if hasattr(duration, "__len__") else float(duration)
                                 
-                                # Применяем громкость
-                                if volume != 1.0:
-                                    wav = wav * volume
+                                wav = apply_tts_volume(wav, volume)
                                 
                                 # 2. Переключаем анимацию в speaking строго перед воспроизведением
                                 _send_ws({"type": "state", "value": "speaking"})
@@ -619,7 +647,7 @@ def _tts_worker():
                                         except queue.Empty:
                                             pass
                                     time.sleep(0.02)
-                                
+
                                 if not interrupted:
                                     sd.wait()
                             except Exception as e:
@@ -799,6 +827,11 @@ audit_logger = get_audit_logger(DATA_DIR / "audit" / "actions.jsonl")
 
 
 memory_manager = MemoryManager(DATA_DIR / "MEMORY.md")
+session_store = SessionStore(DATA_DIR / "vera.db")
+try:
+    session_store.import_legacy_dialog(memory_manager.get_last_dialog())
+except Exception as e:
+    print(f"[SESSIONS] Ошибка импорта старого диалога: {e}")
 
 print(f"[INFO] Модули задач и памяти инициализированы.")
 print(f"[MEMORY] История диалога: {memory_manager.memory_path}")
@@ -880,13 +913,43 @@ HANDLERS_WITH_MANAGERS = (
     execute_memory_command,
 )
 
+
+def _run_deterministic_handlers(
+    text: str,
+    *,
+    include_system: bool,
+    log_prefix: str,
+) -> Optional[str]:
+    groups = [
+        HANDLERS_WITH_MANAGERS,
+        (execute_currency_command, execute_weather_command, execute_wikipedia_command),
+    ]
+    if include_system:
+        groups.append(HANDLERS)
+
+    for handlers in groups:
+        for handler in handlers:
+            try:
+                result = handler(text)
+            except Exception as exc:
+                print(f"[{log_prefix}] {handler.__name__}: {exc}")
+                continue
+            if result is not None:
+                return result
+    return None
+
+
 def _handle_user_command(
     text: str,
     file_name: str = None,
     file_context: str = None,
+    image_data_url: str = None,
+    image_preview_data_url: str = None,
+    file_size: Optional[int] = None,
     source: str = 'chat',
     task_id: Optional[str] = None,
     bypass_confirmation: bool = False,
+    session_id: Optional[str] = None,
 ) -> str:
     """Обрабатывает команду, логирует в память, извлекает факты, возвращает ответ."""
     # Формируем полный текст для LLM (но в историю пойдёт чистый text + file_name)
@@ -903,6 +966,7 @@ def _handle_user_command(
             task_id=task_id,
             file_name=file_name,
             file_context=file_context,
+            image_data_url=image_data_url,
             bypass_confirmation=bypass_confirmation,
         )
     except Exception as e:
@@ -914,13 +978,31 @@ def _handle_user_command(
         if file_name:
             display_text = f"📎 Прикреплённый файл: {file_name}\n{text}" if text else f"📎 Прикреплённый файл: {file_name}"
 
-        memory_manager.add_dialog_message("user", display_text)
+        active_session_id = session_id or _current_session_id.get()
+        if active_session_id:
+            metadata = {}
+            if file_name:
+                metadata["file_name"] = file_name
+            if file_size is not None:
+                metadata["file_size"] = int(file_size)
+            if image_preview_data_url:
+                metadata["image_preview_data_url"] = image_preview_data_url
+                metadata["is_image"] = True
+            metadata["has_user_text"] = bool(text.strip())
+            session_store.add_message(
+                active_session_id,
+                "user",
+                text or file_name or "Вложение",
+                kind="image" if image_preview_data_url else ("file" if file_name else "text"),
+                metadata=metadata or None,
+            )
         # Отправляем сообщение пользователя в UI только если это голос, так как текстовый чат делает оптимистичный апдейт
         if source == 'voice':
             _send_ws({"type": "chat", "role": "user", "text": display_text})
         
         if response:
-            memory_manager.add_dialog_message("assistant", response)
+            if active_session_id:
+                session_store.add_message(active_session_id, "assistant", response)
             _send_ws({"type": "chat", "role": "assistant", "text": response})
     except Exception as e:
         print(f"[MEMORY] Ошибка логирования: {e}")
@@ -956,6 +1038,7 @@ def _command_worker():
 
         task_id = _next_task_id()
         bypass_confirmation = False
+        session_id = None
 
         # Поддержка разных форматов для обратной совместимости
         if isinstance(item, dict):
@@ -963,9 +1046,16 @@ def _command_worker():
             source = str(item.get("source") or "voice")
             file_name = item.get("file_name")
             file_context = item.get("file_context")
+            image_data_url = item.get("image_data_url")
+            image_preview_data_url = item.get("image_preview_data_url")
+            file_size = item.get("file_size")
             task_id = str(item.get("task_id") or task_id)
             bypass_confirmation = bool(item.get("bypass_confirmation", False))
+            session_id = str(item.get("session_id") or "").strip() or None
         elif isinstance(item, tuple):
+            image_data_url = None
+            image_preview_data_url = None
+            file_size = None
             if len(item) == 4:
                 cmd, source, file_name, file_context = item
             elif len(item) == 2:
@@ -977,8 +1067,23 @@ def _command_worker():
         else:
             cmd, source = item, 'voice'
             file_name, file_context = None, None
+            image_data_url = None
+            image_preview_data_url = None
+            file_size = None
 
-        _emit_task_status(task_id, "running", {"source": source})
+        if source == "chat":
+            session = session_store.ensure_session(session_id, source=source)
+            session_id = session["id"]
+        session_token = _current_session_id.set(session_id)
+        task_token = _current_task_id.set(task_id)
+        if session_id:
+            session_store.update_session(
+                session_id,
+                active_task_id=task_id,
+                clear_error=True,
+            )
+
+        _emit_task_status(task_id, "running", {"source": source}, session_id=session_id)
         _send_ws({"type": "state", "value": "thinking"})
 
         if is_timer_ringing():
@@ -987,8 +1092,12 @@ def _command_worker():
                 stop_timer_ring()
                 _send_ws({"type": "timer_done"})
                 _send_ws({"type": "text", "value": "Таймер отключён."})
-                _emit_task_status(task_id, "completed")
+                _emit_task_status(task_id, "completed", session_id=session_id)
                 _send_ws({"type": "state", "value": "idle"})
+                if session_id:
+                    session_store.update_session(session_id, clear_active_task=True)
+                _current_task_id.reset(task_token)
+                _current_session_id.reset(session_token)
                 continue
 
         try:
@@ -996,9 +1105,13 @@ def _command_worker():
                 cmd,
                 file_name,
                 file_context,
+                image_data_url,
+                image_preview_data_url,
+                file_size,
                 source=source,
                 task_id=task_id,
                 bypass_confirmation=bypass_confirmation,
+                session_id=session_id,
             )
             try:
                 print(f"[Вера] {response}")
@@ -1008,7 +1121,9 @@ def _command_worker():
                 except Exception:
                     print("[Вера] (Нечитаемый ответ из-за кодировки консоли)")
 
-            _emit_task_status(task_id, "completed", {})
+            _emit_task_status(task_id, "completed", {}, session_id=session_id)
+            if session_id:
+                session_store.update_session(session_id, clear_active_task=True)
             audit_logger.write_event(
                 "task.completed",
                 {"task_id": task_id, "source": source, "response": str(response)[:300]},
@@ -1020,9 +1135,18 @@ def _command_worker():
             else:
                 _send_ws({"type": "state", "value": "listening"})
         except Exception as e:
-            _emit_task_status(task_id, "failed", {"reason": str(e)})
+            _emit_task_status(task_id, "failed", {"reason": str(e)}, session_id=session_id)
+            if session_id:
+                session_store.update_session(
+                    session_id,
+                    clear_active_task=True,
+                    last_error=str(e),
+                )
             audit_logger.write_event("task.failed", {"task_id": task_id, "source": source, "error": str(e)})
             _send_ws({"type": "chat", "role": "system", "text": f"Ошибка выполнения задачи: {e}"})
+        finally:
+            _current_task_id.reset(task_token)
+            _current_session_id.reset(session_token)
 
 
 # Маршрутизация команд (атомарная, без планирования)
@@ -1037,82 +1161,75 @@ def route_command_simple(
     task_id: Optional[str] = None,
     file_name: Optional[str] = None,
     file_context: Optional[str] = None,
+    image_data_url: Optional[str] = None,
     bypass_confirmation: bool = False,
     is_background: bool = False,
+    _intent=None,
 ) -> str:
     """Р’С‹РїРѕР»РЅСЏРµС‚ РѕРґРЅСѓ Р°С‚РѕРР°СЂРЅСѓСЋ РєРѕРР°РЅРґСѓ Р±РµР· РїР»Р°РЅРёСЂРѕРІР°РЅРёСЏ."""
-    if _is_simple_greeting(text):
-        return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
-    
+    if image_data_url:
+        return ask_llm(
+            text,
+            source=source,
+            allow_tools=False,
+            task_id=task_id,
+            bypass_confirmation=bypass_confirmation,
+            is_background=is_background,
+            file_name=file_name,
+            image_data_url=image_data_url,
+        )
 
-
-
-
-    # Хардкодный обработчик для Telegram авторизации с номером (чтобы не терялся phone)
-    tg_auth_match = re.search(r"(?:авторизуй|подключи)\s+(?:телеграм|телогу|телеге)\s+(?:по\s+номеру\s+)?([\+\d\s\-\(\)]+)", text, re.IGNORECASE)
-    if tg_auth_match:
-        phone = tg_auth_match.group(1).strip()
-        # Номер должен содержать хотя бы несколько цифр
-        if len(re.sub(r"\D", "", phone)) >= 5:
-            args = {"action": "start_auth", "phone": phone}
-            print(f"[TOOL_CALL_HARDCODED] telegram: {args}")
-            _send_ws({"type": "tool_call", "name": "telegram", "args": args})
-            from main.tools.telegram import execute_telegram_tool
-            return execute_telegram_tool(args)
+    intent = _intent or route_intent(text, allow_skills=False)
+    if intent.telegram_action:
+        return _execute_telegram_action(intent.telegram_action)
             
-    # Хардкорный обработчик для ввода Telegram кода подтверждения
-    code_match = re.search(r"(?:мой\s+)?(?:код|пароль)\s*(?:в\s*телеге|в\s*телегу|в\s*телеграме|для\s*телеграма|для\s*телеги)?\s*[:\-]?\s*(\d{5})", text.strip(), re.IGNORECASE)
-    # ли если текст состоит просто из 5 цифр
-    if not code_match and re.fullmatch(r"\d{5}", text.strip()):
-        code_match = re.match(r"(\d{5})", text.strip())
-        
-    if code_match:
-        args = {"action": "enter_code", "code": code_match.group(1)}
-        print(f"[TOOL_CALL_HARDCODED] telegram: {args}")
-        _send_ws({"type": "tool_call", "name": "telegram", "args": args})
-        from main.tools.telegram import execute_telegram_tool
-        return execute_telegram_tool(args)
-            
-    # Сначала проверяем обработчики с менеджерами
-    for h in HANDLERS_WITH_MANAGERS:
-        try:
-            res = h(text)
-        except Exception as e:
-            print(f"[ERROR] handler: {e}")
-            res = None
-        if res is not None:
-            return res
-    
-    # Проверяем валюты, погоду и википедию (специальные обработчики)
-    for h in (execute_currency_command, execute_weather_command, execute_wikipedia_command):
-        try:
-            res = h(text)
-        except Exception as e:
-            print(f"[ERROR] {h.__name__}: {e}")
-            res = None
-        if res is not None:
-            return res
-    
-    # Остальные команды из модулей
-    for h in HANDLERS:
-        try:
-            res = h(text)
-        except Exception as e:
-            print(f"[ERROR] {h.__name__}: {e}")
-            res = None
-        if res is not None:
-            return res
+    handled = _run_deterministic_handlers(text, include_system=True, log_prefix="ROUTE")
+    if handled is not None:
+        return handled
     
     return ask_llm(text, source=source, task_id=task_id, bypass_confirmation=bypass_confirmation, is_background=is_background, file_name=file_name)
 
 
-def _web_search_for_presentation(query: str) -> str:
-    """Обёртка веб-поиска для генератора презентаций."""
+def _web_search_for_skill(query: str) -> dict:
+    """Обёртка веб-поиска для локальных skill-конвейеров."""
     try:
-        return web_search_answer(query, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS, detailed=True)
+        answer = web_search_answer(query, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS)
+        return {"text": answer, "sources": list(LAST_SEARCH_URLS)}
     except Exception as e:
-        print(f"[PRES_SEARCH] Ошибка поиска: {e}")
-        return ""
+        print(f"[SKILL_SEARCH] Ошибка поиска: {e}")
+        return {"text": "", "sources": []}
+
+
+def _execute_telegram_action(args: dict[str, str], *, emit_event: bool = True) -> str:
+    if emit_event:
+        _send_ws({"type": "tool_call", "name": "telegram", "args": args})
+    from main.tools.telegram import execute_telegram_tool
+    return execute_telegram_tool(args)
+
+
+def _execute_skill_request(
+    skill_name: str,
+    text: str,
+) -> tuple[str, Optional[str], str]:
+    if skill_name == "presentations":
+        msg, file_path = execute_presentation_creation(
+            text=text,
+            llm=llm,
+            web_search_func=_web_search_for_skill,
+            create_pptx_func=create_pptx,
+        )
+        return msg, file_path, "create_presentation"
+    if skill_name == "documents":
+        msg, file_path = execute_text_document_creation(
+            text=text,
+            llm=llm,
+            web_search_func=_web_search_for_skill,
+            create_txt_func=create_txt,
+            create_md_func=create_md,
+            create_docx_func=create_docx,
+        )
+        return msg, file_path, "create_document"
+    raise ValueError(f"Неизвестный skill: {skill_name}")
 
 
 # Маршрутизация команд (главная функция)
@@ -1125,6 +1242,7 @@ def route_command(
     task_id: Optional[str] = None,
     file_name: Optional[str] = None,
     file_context: Optional[str] = None,
+    image_data_url: Optional[str] = None,
     bypass_confirmation: bool = False,
 ) -> str:
     """\u0413\u043b\u0430\u0432\u043d\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043a\u043e\u043c\u0430\u043d\u0434 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0449\u0438\u043a\u0430."""
@@ -1134,14 +1252,27 @@ def route_command(
     if any(t in lowered for t in _get_telegram_exit_commands()) and _telegram_mode and _telegram_mode.running:
         return _stop_telegram_mode()
 
-    if is_presentation_request(text):
-        msg, _ = execute_presentation_creation(
-            text=text,
-            llm=llm,
-            web_search_func=_web_search_for_presentation,
-            create_pptx_func=create_pptx,
-        )
-        return msg
+    intent = route_intent(text)
+    if intent.skill:
+        tool_name = "create_presentation" if intent.skill == "presentations" else "create_document"
+        _send_ws({"type": "tool_call", "name": tool_name, "args": {"request": text}})
+        try:
+            msg, file_path, tool_name = _execute_skill_request(intent.skill, text)
+            _send_ws({
+                "type": "tool_result",
+                "name": tool_name,
+                "status": "ok",
+                "result": str(file_path or msg)[:1000],
+            })
+            return msg
+        except Exception as e:
+            _send_ws({
+                "type": "tool_result",
+                "name": tool_name,
+                "status": "error",
+                "result": str(e)[:1000],
+            })
+            return f"Не удалось выполнить skill {intent.skill}: {e}"
 
     return route_command_simple(
         text,
@@ -1149,7 +1280,9 @@ def route_command(
         task_id=task_id,
         file_name=file_name,
         file_context=file_context,
+        image_data_url=image_data_url,
         bypass_confirmation=bypass_confirmation,
+        _intent=intent,
     )
 
 def route_heartbeat_task(text: str) -> str:
@@ -1157,37 +1290,17 @@ def route_heartbeat_task(text: str) -> str:
     background_task_id = _next_task_id()
 
 
-    # Хардкодный обработчик Telegram
-    tg_auth_match = re.search(r"(?:авторизуй|подключи)\s+(?:телеграм|телогу|телеге)\s+(?:по\s+номеру\s+)?([\+\d\s\-\(\)]+)", text, re.IGNORECASE)
-    if tg_auth_match:
-        phone = tg_auth_match.group(1).strip()
-        if len(re.sub(r"\D", "", phone)) >= 5:
-            args = {"action": "start_auth", "phone": phone}
-            from main.tools.telegram import execute_telegram_tool
-            return execute_telegram_tool(args)
+    intent = route_intent(text, allow_skills=False)
+    if intent.telegram_action:
+        return _execute_telegram_action(intent.telegram_action, emit_event=False)
 
-    # Проверяем все хендлеры из route_command_simple
-    for h in HANDLERS_WITH_MANAGERS:
-        try:
-            res = h(text)
-            if res is not None: return res
-        except Exception: pass
-        
-    for h in (execute_currency_command, execute_weather_command, execute_wikipedia_command):
-        try:
-            res = h(text)
-            if res is not None: return res
-        except Exception: pass
-        
-    for h in HANDLERS:
-        try:
-            res = h(text)
-            if res is not None: return res
-        except Exception: pass
+    handled = _run_deterministic_handlers(text, include_system=True, log_prefix="HEARTBEAT")
+    if handled is not None:
+        return handled
 
     # Проверяем, не является ли это поисковым запросом ("прочитай новости", "какая погода", "кто такой")
     # Если да, перенаправляем в LLM, где он сможет использовать инструменты
-    if _should_use_web_search(text):
+    if intent.direct_web:
         return ask_llm(text, source="heartbeat", task_id=background_task_id, is_background=True)
 
     # Если ни один системный инструмент не отреагировал, считаем это простым текстовым напоминанием.
@@ -1195,8 +1308,8 @@ def route_heartbeat_task(text: str) -> str:
     return text
 
 
-# ---- Системный промпт из модульных файлов ----
-# Файлы: data/IDENTITY.md, data/SOUL.md, data/TOOLS.md, data/USER.md
+# ---- Компактный системный промпт ----
+# Файл: data/CORE.md + динамические дата и часовой пояс.
 # Для перезагрузки скажи "обнови промпт" или введи команду
 
 def get_system_prompt() -> str:
@@ -1209,75 +1322,13 @@ def get_system_prompt() -> str:
 try:
     _startup_prompt = build_system_prompt(DATA_DIR)
     if _startup_prompt:
-        print(f"[PROMPT] Системный промпт загружен ({len(_startup_prompt)} символов) | IDENTITY + SOUL + TOOLS + USER")
+        print(f"[PROMPT] Компактный системный промпт загружен ({len(_startup_prompt)} символов) | CORE + RUNTIME")
     else:
-        print("[WARN] Промпт пустой — проверьте файлы IDENTITY.md, SOUL.md, TOOLS.md в data/")
+        print("[WARN] Промпт пустой — проверьте файл CORE.md в data/")
 except Exception as e:
     print(f"[ERROR] Не удалось загрузить промпт: {e}")
 
 
-
-
-_WEB_SEARCH_PATTERN = re.compile(
-    # Финансы
-    r"(?:курс|валют|usd|eur|рубл|btc|биткоин|акци|индекс"
-    # Время и актуальность
-    r"|новост|сегодня|завтра|сейчас|онлайн|в прямом эфире"
-    r"|расписани|пробк|трафик|ковид|эпидеми"
-    # Даты выпуска и события
-    r"|когда выш(?:ел|ла)|когда выпущен|когда был выпущен|дата выпуска|дата выхода"
-    r"|когда появил|когда создан|когда основан"
-    # Определения и информация
-    r"|что означает|как расшифровывается|расшифровка"
-    r"|что за |что такое|компания "
-    # Рейтинги и позиции
-    r"|какое место|в топе|рейтинг|занимает место|позиция в"
-    r"|лучш|топ |список"
-    # Поисковые команды
-    r"|найди|найти|поищи|поискать|узнай|узнать|проверь|проверить"
-    # Технологии и продукты
-    r"|iphone|rtx|gtx|playstation|xbox|nvidia|amd)",
-    re.IGNORECASE
-)
-
-
-
-def _should_use_web_search(user_text: str) -> bool:
-    try:
-        return bool(_WEB_SEARCH_PATTERN.search(user_text or ""))
-    except Exception:
-        return False
-
-
-
-def _is_plain_code_request(user_text: str) -> bool:
-    text = (user_text or "").lower().strip()
-    if not text:
-        return False
-
-    code_intent = bool(
-        re.search(
-            "(\u043d\u0430\u043f\u0438\u0448\u0438|\u043f\u043e\u043a\u0430\u0436\u0438|\u0434\u0430\u0439|\u0441\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u0443\u0439|\u0441\u043e\u0437\u0434\u0430\u0439)\\s+.*(\u043a\u043e\u0434|\u0441\u043a\u0440\u0438\u043f\u0442|python|\u043f\u0438\u0442\u043e\u043d)",
-            text,
-            re.IGNORECASE,
-        )
-    )
-    file_intent = bool(
-        re.search(
-            "(\u0444\u0430\u0439\u043b|\u0441\u043e\u0445\u0440\u0430\u043d\u0438|\u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442|txt|md|docx|pptx|xlsx|\u0441\u043e\u0437\u0434\u0430\u0439\\s+\u0444\u0430\u0439\u043b|\u0437\u0430\u043f\u0438\u0448\u0438\\s+\u0432\\s+\u0444\u0430\u0439\u043b)",
-            text,
-            re.IGNORECASE,
-        )
-    )
-    run_intent = bool(
-        re.search(
-            "(\u0437\u0430\u043f\u0443\u0441\u0442\u0438|\u0432\u044b\u043f\u043e\u043b\u043d\u0438|\u043f\u0440\u043e\u0433\u043e\u043d\u0438|\u043f\u0440\u043e\u0432\u0435\u0440\u044c\\s+\u043a\u043e\u0434|\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\\s+\u0438\u043d\u0442\u0435\u0440\u043f\u0440\u0435\u0442\u0430\u0442\u043e\u0440)",
-            text,
-            re.IGNORECASE,
-        )
-    )
-
-    return code_intent and not file_intent and not run_intent
 
 
 def ask_llm(
@@ -1289,6 +1340,8 @@ def ask_llm(
     is_background: bool = False,
     _tool_loop_depth: int = 0,
     file_name: Optional[str] = None,
+    image_data_url: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     if _is_simple_greeting(user_text):
         return "\u042f \u043d\u0430 \u0441\u0432\u044f\u0437\u0438. \u0427\u0435\u043c \u043f\u043e\u043c\u043e\u0447\u044c?"
@@ -1298,16 +1351,48 @@ def ask_llm(
     if allow_tools and _is_small_talk(user_text):
         allow_tools = False
 
-    if _tool_loop_depth == 0 and not file_name and _should_use_web_search(user_text):
+    intent = (
+        route_intent(
+            user_text,
+            file_name=file_name,
+            allow_web=not file_name and _tool_loop_depth == 0,
+            allow_skills=False,
+            available_names=TOOL_DEFINITIONS_BY_NAME,
+            max_tools=2,
+        )
+        if allow_tools
+        else None
+    )
+    routed_tool_names = list(intent.tools) if intent else []
+
+    if (
+        _tool_loop_depth == 0
+        and not file_name
+        and intent
+        and intent.direct_web
+    ):
         try:
             _send_ws({"type": "tool_call", "name": "web_search", "args": {"query": user_text}})
-            return web_search_answer(user_text, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS)
+            result = web_search_answer(user_text, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS)
+            _send_ws({
+                "type": "tool_result",
+                "name": "web_search",
+                "status": "ok",
+                "result": str(result)[:1000],
+            })
+            return result
         except Exception as e:
+            _send_ws({
+                "type": "tool_result",
+                "name": "web_search",
+                "status": "error",
+                "result": str(e)[:1000],
+            })
             print(f"[WEB_SEARCH] \u041e\u0448\u0438\u0431\u043a\u0430 \u0431\u044b\u0441\u0442\u0440\u043e\u0433\u043e \u043f\u043e\u0438\u0441\u043a\u0430: {e}")
 
     system_content = get_system_prompt()
     try:
-        memory_context = memory_manager.get_context_for_prompt()
+        memory_context = memory_manager.get_context_for_prompt(user_text)
         if memory_context:
             system_content += "\n\n" + memory_context
     except Exception as e:
@@ -1315,11 +1400,21 @@ def ask_llm(
 
     messages = [{"role": "system", "content": system_content}]
     try:
-        for m in memory_manager.get_last_dialog():
+        active_session_id = session_id or _current_session_id.get()
+        for m in session_store.get_context_messages(active_session_id) if active_session_id else []:
             messages.append(m)
     except Exception:
         pass
-    messages.append({"role": "user", "content": user_text})
+    if image_data_url:
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_text or "Опиши изображение."},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ],
+        })
+    else:
+        messages.append({"role": "user", "content": user_text})
 
     allowed = {
         "temperature", "top_p", "top_k", "min_p", "repeat_penalty",
@@ -1340,13 +1435,12 @@ def ask_llm(
     gen_args["chat_template_kwargs"] = {"enable_thinking": bool(thinking_enabled)}
     gen_args["reasoning_budget"] = reasoning_budget if thinking_enabled else 0
 
-    effective_allow_tools = allow_tools and not _is_plain_code_request(user_text)
+    effective_allow_tools = allow_tools and not image_data_url and not (intent and intent.plain_code)
     if effective_allow_tools:
-        all_tools = TOOL_DEFINITIONS
-        if file_name or _tool_loop_depth > 0:
-            all_tools = [t for t in all_tools if t.get("function", {}).get("name") != "web_search"]
-        gen_args["tools"] = all_tools
-        gen_args["tool_choice"] = "auto"
+        selected_tools = get_tool_definitions(routed_tool_names)
+        if selected_tools:
+            gen_args["tools"] = selected_tools
+            gen_args["tool_choice"] = "auto"
 
     use_stream = (source == 'chat')
     if use_stream:
@@ -1563,6 +1657,8 @@ def _handle_tool_calls(
     tool_outputs: list[str] = []
     tool_errors: list[str] = []
     had_successful_tool = False
+    terminal_tool_output: Optional[str] = None
+    request_intent = route_intent(user_text, allow_skills=False)
 
     for tc in tool_calls:
         fn = tc.get("function", {}) if isinstance(tc, dict) else {}
@@ -1587,7 +1683,10 @@ def _handle_tool_calls(
 
 
 
-        if tool_name in {"create_document", "code_interpreter"} and _is_plain_code_request(user_text):
+        if (
+            tool_name in {"create_document", "code_interpreter"}
+            and request_intent.plain_code
+        ):
             return ask_llm(
                 user_text,
                 source=source,
@@ -1604,6 +1703,7 @@ def _handle_tool_calls(
                 tool_outputs.append("web_search: инструмент отключен, так как прикреплен файл.")
                 continue
             try:
+                _send_ws({"type": "tool_call", "name": "web_search", "args": args})
                 query = ""
                 if isinstance(args, dict):
                     query = str(args.get("query") or "").strip()
@@ -1613,19 +1713,29 @@ def _handle_tool_calls(
                 if not query:
                     tool_outputs.append("web_search: пустой поисковый запрос")
                 else:
-                    detailed = bool(args.get("detailed", False))
                     output = web_search_answer(
                         query,
                         _WEB_CFG,
                         get_system_prompt(),
                         llm,
                         LAST_SEARCH_URLS,
-                        detailed=detailed,
                     )
                     tool_outputs.append(f"web_search: {output}")
+                    _send_ws({
+                        "type": "tool_result",
+                        "name": "web_search",
+                        "status": "ok",
+                        "result": str(output)[:1000],
+                    })
             except Exception as e:
                 print(f"[WEB_SEARCH] Ошибка: {e}")
                 tool_outputs.append(f"web_search: error {e}")
+                _send_ws({
+                    "type": "tool_result",
+                    "name": "web_search",
+                    "status": "error",
+                    "result": str(e)[:1000],
+                })
             continue
 
         if tool_name in TOOLS:
@@ -1638,8 +1748,22 @@ def _handle_tool_calls(
                 )
                 if not ok:
                     raise RuntimeError(err)
+                if tool_name == "create_document" and re.match(
+                    r"^\s*(?:Ошибка|Укажите|Неизвестное действие)\b",
+                    str(output),
+                    flags=re.IGNORECASE,
+                ):
+                    raise RuntimeError(str(output))
                 tool_outputs.append(f"{tool_name}: {output}")
                 had_successful_tool = True
+                if tool_name == "create_document":
+                    terminal_tool_output = str(output)
+                _send_ws({
+                    "type": "tool_result",
+                    "name": tool_name,
+                    "status": "ok",
+                    "result": str(output)[:1000],
+                })
                 audit_logger.write_event(
                     "tool.executed",
                     {"task_id": task_id, "tool_name": tool_name, "status": "ok"},
@@ -1649,6 +1773,12 @@ def _handle_tool_calls(
                 error_line = f"{tool_name}: error {e}"
                 tool_outputs.append(error_line)
                 tool_errors.append(error_line)
+                _send_ws({
+                    "type": "tool_result",
+                    "name": tool_name,
+                    "status": "error",
+                    "result": str(e)[:1000],
+                })
                 audit_logger.write_event(
                     "tool.executed",
                     {"task_id": task_id, "tool_name": tool_name, "status": "error", "error": str(e)},
@@ -1665,6 +1795,8 @@ def _handle_tool_calls(
         return "Модель запросила инструменты, но не указала корректные вызовы."
     if tool_errors and not had_successful_tool:
         return "Не удалось выполнить инструмент(ы):\n" + "\n".join(f"- {line}" for line in tool_errors[:5])
+    if terminal_tool_output:
+        return terminal_tool_output
 
     tool_context = "\n".join(f"- {line}" for line in tool_outputs)
     followup_prompt = (
@@ -1685,7 +1817,7 @@ def _handle_tool_calls(
 
 def run_main_loop():
     """Главный цикл прослушивания и обработки команд."""
-    print("[INFO] Система готова. Скажите ключевое слово.")
+    print("[INFO] Завершение инициализации голосового контура...")
     # Запускаем поток обработки голосовых команд (LLM не блокирует аудиоцикл)
     _cmd_thread = threading.Thread(target=_command_worker, daemon=True)
     _cmd_thread.start()
@@ -1707,6 +1839,12 @@ def run_main_loop():
     silence_timeout = cfg["silence_timeout"]
 
     with sd.RawInputStream(samplerate=samplerate, blocksize=8000, dtype='int16', channels=1, callback=audio_callback):
+        while not _tts_ready_event.wait(timeout=0.1):
+            if _shutdown_event.is_set():
+                return
+        _agent_ready_event.set()
+        print("[INFO] Система готова. Скажите ключевое слово.")
+        _send_ws({"type": "agent_status", **get_agent_readiness()})
         last_audio_time = time.time()
         listening_for_command = False
         while not _shutdown_event.is_set():
