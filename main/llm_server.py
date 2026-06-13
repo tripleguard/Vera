@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 import ctypes
@@ -101,7 +102,7 @@ class LlamaServer:
         ctx_size: int = 16384,
         port: int = 29741,
         host: str = "127.0.0.1",
-        n_gpu_layers: int = -1,
+        n_gpu_layers: Any = "auto",
         extra_args: Optional[List[str]] = None,
     ):
         self.model_path = self._resolve_model_path()
@@ -150,11 +151,15 @@ class LlamaServer:
             "--port", str(self.port),
             "--host", self.host,
             "--n-gpu-layers", str(self.n_gpu_layers),
+            "--parallel", "1",
             "--jinja",
-            "--fit", "off",
+            "--fit", "on",
         ]
         if self.mmproj_path:
             cmd.extend(["--mmproj", str(self.mmproj_path)])
+            # A full-precision projector does not fit alongside a 4B model on
+            # common 4 GB GPUs. Keep vision available without exhausting VRAM.
+            cmd.append("--no-mmproj-offload")
         cmd.extend(self.extra_args)
 
         print(f"[LLM_SERVER] Запуск: {' '.join(cmd)}")
@@ -185,8 +190,16 @@ class LlamaServer:
         atexit.register(self.stop)
 
         if not self._wait_for_health():
-            # Читаем лог процесса для диагностики
+            failed_projector = self.mmproj_path
             self.stop()
+            if failed_projector:
+                print(
+                    f"[LLM_SERVER] Projector {failed_projector.name} could not be "
+                    "loaded with this model. Retrying in text-only mode."
+                )
+                self.mmproj_path = None
+                self.start()
+                return
             raise RuntimeError("llama-server did not pass /health check in time")
 
         print(f"[LLM_SERVER] Сервер готов на http://{self.host}:{self.port}")
@@ -243,14 +256,14 @@ class LlamaServer:
         project_root = get_install_root()
         gguf_files = sorted(
             path for path in project_root.glob("*.gguf")
-            if not path.name.lower().startswith("mmproj")
+            if "mmproj" not in path.name.lower()
         )
         if not gguf_files:
             # Also check parent dirs (for Inno Setup layout)
             for parent in project_root.parents:
                 gguf_files = sorted(
                     path for path in parent.glob("*.gguf")
-                    if not path.name.lower().startswith("mmproj")
+                    if "mmproj" not in path.name.lower()
                 )
                 if gguf_files:
                     break
@@ -266,6 +279,22 @@ class LlamaServer:
 
     def _resolve_mmproj_path(self) -> Optional[Path]:
         """Find a local multimodal projector next to the selected model."""
+        configured = str(
+            get_config().get("model", "vision_projector_path", default="auto") or ""
+        ).strip()
+        if configured and configured.lower() != "auto":
+            configured_path = Path(configured)
+            if not configured_path.is_absolute():
+                configured_path = get_install_root() / configured_path
+            if configured_path.is_file():
+                chosen = configured_path.resolve()
+                print(f"[LLM_SERVER] Multimodal projector from config: {chosen.name}")
+                return chosen
+            print(
+                f"[LLM_SERVER] Configured multimodal projector not found: "
+                f"{configured_path}"
+            )
+
         search_dirs = [self.model_path.parent, get_install_root()]
         seen = set()
         candidates: List[Path] = []
@@ -274,13 +303,88 @@ class LlamaServer:
             if resolved in seen or not resolved.exists():
                 continue
             seen.add(resolved)
-            candidates.extend(sorted(resolved.glob("mmproj*.gguf")))
+            candidates.extend(sorted(
+                path for path in resolved.glob("*.gguf")
+                if "mmproj" in path.name.lower()
+            ))
         if not candidates:
             print("[LLM_SERVER] Multimodal projector not found; vision input is disabled.")
             return None
-        chosen = candidates[0].resolve()
+
+        model_size = self._model_size_tag(self.model_path)
+        size_compatible = [
+            candidate for candidate in candidates
+            if (
+                not model_size
+                or not self._model_size_tag(candidate)
+                or self._model_size_tag(candidate) == model_size
+            )
+        ]
+        if not size_compatible:
+            names = ", ".join(candidate.name for candidate in candidates)
+            print(
+                f"[LLM_SERVER] Ignoring size-incompatible multimodal projector(s) "
+                f"for {self.model_path.name}: {names}"
+            )
+            return None
+        sized_matches = [
+            candidate for candidate in size_compatible
+            if self._model_size_tag(candidate) == model_size
+        ]
+        pool = sized_matches or size_compatible
+        ranked = sorted(
+            (
+                (self._projector_match_score(candidate), candidate)
+                for candidate in pool
+            ),
+            key=lambda item: (-item[0], item[1].name.lower()),
+        )
+        best_score = ranked[0][0] if ranked else 0
+        best = [candidate for score, candidate in ranked if score == best_score]
+
+        if best_score > 0 and len(best) == 1:
+            chosen = best[0].resolve()
+        elif len(size_compatible) == 1:
+            # Many model releases use a generic name such as mmproj-F32.gguf.
+            chosen = size_compatible[0].resolve()
+        else:
+            names = ", ".join(candidate.name for candidate in candidates)
+            print(
+                f"[LLM_SERVER] Cannot choose a unique multimodal projector for "
+                f"{self.model_path.name}: {names}. Set model.vision_projector_path."
+            )
+            return None
+
         print(f"[LLM_SERVER] Multimodal projector: {chosen.name}")
         return chosen
+
+    @staticmethod
+    def _model_size_tag(path: Path) -> Optional[str]:
+        match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*[bB](?![A-Za-z])", path.stem)
+        return match.group(1).lower() if match else None
+
+    def _projector_match_score(self, projector: Path) -> int:
+        model_tokens = self._model_family_tokens(self.model_path)
+        projector_tokens = self._model_family_tokens(projector)
+        return len(model_tokens & projector_tokens)
+
+    @staticmethod
+    def _model_family_tokens(path: Path) -> set[str]:
+        ignored = {
+            "gguf", "mmproj", "model", "vision", "projector",
+            "f16", "f32", "bf16", "fp16", "fp32",
+            "q", "q2", "q3", "q4", "q5", "q6", "q8",
+            "k", "s", "m", "l", "xs",
+        }
+        tokens = set(re.findall(r"[a-z]+|\d+(?:\.\d+)?b?", path.stem.lower()))
+        return {
+            token for token in tokens
+            if (
+                token not in ignored
+                and not token.isdigit()
+                and not re.fullmatch(r"q\d+(?:_[a-z0-9]+)*", token)
+            )
+        }
 
     def _find_executable(self) -> Optional[Path]:
         """Ищет llama-server.exe в папке проекта и подпапках."""
@@ -361,7 +465,8 @@ class LlamaClient:
             self._base_url = base_url.rstrip("/")
         else:
             self._base_url = f"http://{host}:{port}"
-        self._chat_url = f"{self._base_url}/v1/chat/completions"
+        api_prefix = self._base_url if self._base_url.endswith("/v1") else f"{self._base_url}/v1"
+        self._chat_url = f"{api_prefix}/chat/completions"
 
     def _parse_stream(self, response: requests.Response) -> Iterator[Dict[str, Any]]:
         for line in response.iter_lines():
@@ -423,4 +528,11 @@ class LlamaClient:
                 "Проверьте, что llama-server запущен."
             )
         except requests.HTTPError as e:
-            raise RuntimeError(f"[LLM_CLIENT] HTTP ошибка: {e}")
+            details = ""
+            if e.response is not None:
+                try:
+                    details = str(e.response.text or "").strip()
+                except Exception:
+                    details = ""
+            suffix = f": {details[:1000]}" if details else ""
+            raise RuntimeError(f"[LLM_CLIENT] HTTP ошибка: {e}{suffix}")

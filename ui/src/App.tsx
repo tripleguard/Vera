@@ -2486,9 +2486,16 @@ function ChatView({
     }, []);
 
     const openSettingsSection = useCallback((section: string) => {
+        if (!agentReadyRef.current) return;
         setSettingsInitialSection(section);
         setIsSettingsOpen(true);
     }, []);
+
+    useEffect(() => {
+        if (!isAgentReady) {
+            setIsSettingsOpen(false);
+        }
+    }, [isAgentReady]);
 
     const attachWorkspaceFile = useCallback(async (filePath: string) => {
         if (!ipcRenderer || !filePath) return;
@@ -3135,7 +3142,7 @@ function ChatView({
         >
             <AnimatePresence>
                 <SettingsModal
-                    isOpen={isSettingsOpen}
+                    isOpen={isAgentReady && isSettingsOpen}
                     onClose={() => setIsSettingsOpen(false)}
                     currentThemeId={currentThemeId}
                     onThemeChange={onThemeChange}
@@ -3204,7 +3211,14 @@ function ChatView({
                     >
                         <PanelLeft size={18} />
                     </button>
-                    <button onClick={() => openSettingsSection('appearance')} title="Настройки"><Settings size={18} /></button>
+                    <button
+                        onClick={() => openSettingsSection('appearance')}
+                        title={isAgentReady ? 'Настройки' : 'Настройки будут доступны после подключения'}
+                        disabled={!isAgentReady}
+                        aria-disabled={!isAgentReady}
+                    >
+                        <Settings size={18} />
+                    </button>
                     <button onClick={handleMinimize} title="Minimize"><Minus size={18} /></button>
                     <button onClick={handleToggleFullscreen} title={isMaximized ? "Restore" : "Fullscreen"}>
                         {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
@@ -3392,7 +3406,9 @@ function ChatView({
                     type="button"
                     className="vera-workspace-status-action"
                     onClick={() => openSettingsSection('automation')}
-                    title="Периодические задачи"
+                    title={isAgentReady ? 'Периодические задачи' : 'Доступно после подключения'}
+                    disabled={!isAgentReady}
+                    aria-disabled={!isAgentReady}
                 >
                     <Clock3 size={11} />
                     <span>Cron</span>

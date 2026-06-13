@@ -324,6 +324,11 @@ class SessionStore:
             limit=limit,
             roles=("user", "assistant"),
         )
+        # A limited window can begin with an orphaned assistant reply. Some
+        # strict chat templates (including Qwen templates in LM Studio) reject
+        # that sequence even when the latest message is a valid user query.
+        while messages and messages[0]["role"] == "assistant":
+            messages.pop(0)
         return [
             {"role": message["role"], "content": message["content"]}
             for message in messages

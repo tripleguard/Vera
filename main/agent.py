@@ -1450,6 +1450,14 @@ def ask_llm(
         result = llm.create_chat_completion(messages=messages, **gen_args)
     except Exception as e:
         print(f"[LLM] \u041e\u0448\u0438\u0431\u043a\u0430 \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0438: {e}")
+        if image_data_url:
+            error_text = str(e).lower()
+            if "image input is not supported" in error_text or "mmproj" in error_text:
+                return (
+                    "Эта локальная модель не поддерживает изображения или для неё "
+                    "не найден совместимый mmproj-проектор. Добавьте проектор от "
+                    "этой же модели либо задайте model.vision_projector_path в config.json."
+                )
         return "\u0421\u0435\u0439\u0447\u0430\u0441 \u043d\u0435 \u043c\u043e\u0433\u0443 \u043e\u0442\u0432\u0435\u0442\u0438\u0442\u044c. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435, \u0447\u0442\u043e LLM-\u0441\u0435\u0440\u0432\u0435\u0440 \u0437\u0430\u043f\u0443\u0449\u0435\u043d."
 
     if use_stream:

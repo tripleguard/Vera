@@ -47,6 +47,20 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(updated["title"], "Открой браузер и найди прогноз погоды на завтра")
         self.assertEqual(updated["preview"], updated["title"])
 
+    def test_context_drops_orphaned_leading_assistant_message(self):
+        session = self.store.create_session()
+        for index in range(6):
+            role = "user" if index % 2 == 0 else "assistant"
+            self.store.add_message(session["id"], role, f"message-{index}")
+
+        context = self.store.get_context_messages(session["id"])
+
+        self.assertEqual(
+            [item["content"] for item in context],
+            ["message-2", "message-3", "message-4", "message-5"],
+        )
+        self.assertEqual(context[0]["role"], "user")
+
     def test_update_archive_pin_and_delete(self):
         session = self.store.create_session("Работа с окнами")
         self.store.add_message(session["id"], "user", "Сверни браузер")

@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
         "thinking_enabled": True,
         "reasoning_budget": 1024,
         "max_thought_chars": 4000,
+        "vision_projector_path": "auto",
         "use_external_server": False,
         "external_api_url": "http://127.0.0.1:1234/v1",
     },
