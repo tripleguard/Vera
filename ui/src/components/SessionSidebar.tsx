@@ -114,7 +114,6 @@ export function SessionSidebar({
       <button className="session-nav-item session-new-button" onClick={onNew}>
         <Bot size={17} />
         Новая сессия
-        <kbd>Ctrl+N</kbd>
       </button>
 
       <button

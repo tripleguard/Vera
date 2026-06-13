@@ -17,7 +17,7 @@ const ipcRenderer = window.veraDesktop || null;
 
 const apiToken = ipcRenderer ? ipcRenderer.getApiToken() : '';
 
-type VeraThemeId = 'obsidian' | 'daylight' | 'terminal' | 'sakura' | 'graphite';
+type VeraThemeId = 'obsidian' | 'daylight' | 'terminal' | 'sakura' | 'graphite' | 'aurora';
 
 const VERA_THEMES: Array<{
     id: VeraThemeId;
@@ -31,6 +31,7 @@ const VERA_THEMES: Array<{
         { id: 'terminal', name: 'Терминал', description: 'Минимум шума', mode: 'dark', swatches: ['#020403', '#07110c', '#44ff8a'] },
         { id: 'sakura', name: 'Сакура', description: 'Теплый свет', mode: 'light', swatches: ['#fff7fa', '#ffffff', '#d9467f'] },
         { id: 'graphite', name: 'Графит', description: 'Спокойная сталь', mode: 'dark', swatches: ['#17191d', '#22272e', '#f59f5a'] },
+        { id: 'aurora', name: 'Аврора', description: 'Холодное сияние', mode: 'dark', swatches: ['#08151a', '#12343d', '#5eead4'] },
     ];
 
 const THEME_STORAGE_KEY = 'vera_theme';
@@ -101,9 +102,10 @@ function parseMessage(text: string): { cleanText: string; sources: string[], doc
     let docPath: string | null = null;
 
     const docPathRe = /(Презентация создана|Документ сохранен|Документ сохранён|Файл создан):\s*([A-Z]:\\.*?\.(?:pptx|docx|xlsx|pdf|txt|md|csv|json))/i;
-    const docMatch = docPathRe.exec(cleanText);
+    const docMatch = docPathRe.exec(cleanText)
+        || /(?:Markdown создан|Документ Word создан|Excel таблица создана):\s*([A-Z]:\\.*?\.(?:docx|xlsx|txt|md))/i.exec(cleanText);
     if (docMatch) {
-        docPath = docMatch[2].trim();
+        docPath = (docMatch[2] || docMatch[1]).trim();
     }
 
     const sourceBlockRe = /\s*\((?:источники?|sources?):\s*([^)]+)\)/gi;
@@ -446,6 +448,22 @@ function SettingsModal({
     if (!isOpen) return null;
 
     const handleSave = async () => {
+        const numericDrafts = [
+            config?.silence_timeout,
+            config?.model?.ctx_size,
+            config?.model?.temperature,
+            config?.model?.top_p,
+            config?.model?.reasoning_budget,
+            config?.model?.max_thought_chars,
+            config?.tts?.volume,
+            config?.tts?.speed,
+            config?.tts?.total_steps,
+            config?.web_search?.total_context_limit,
+        ];
+        if (numericDrafts.includes('')) {
+            setMessage('Заполните очищенные числовые поля.');
+            return;
+        }
         setLoading(true);
         try {
             await Promise.all([
@@ -481,7 +499,12 @@ function SettingsModal({
     const handleChange = (section: string, field: string, value: any, type: string) => {
         let val = value;
         if (type === 'number' || type === 'float') {
-            val = type === 'number' ? parseInt(value) || 0 : parseFloat(value) || 0;
+            if (value === '') {
+                val = '';
+            } else {
+                const parsed = type === 'number' ? Number.parseInt(value, 10) : Number.parseFloat(value);
+                val = Number.isFinite(parsed) ? parsed : value;
+            }
         } else if (type === 'boolean') {
             val = value === 'true' || value === true;
         }
@@ -894,7 +917,7 @@ function SettingsModal({
                                         <label className="block text-sm opacity-80 mb-1">Таймаут тишины (сек)</label>
                                         <input
                                             type="number"
-                                            value={config.silence_timeout || 0}
+                                            value={config.silence_timeout ?? 0}
                                             onChange={e => handleChange('', 'silence_timeout', e.target.value, 'number')}
                                             className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                         />
@@ -912,7 +935,7 @@ function SettingsModal({
                                         <label className="block text-sm opacity-80 mb-1">Размер контекста</label>
                                         <input
                                             type="number"
-                                            value={config.model?.ctx_size || 0}
+                                            value={config.model?.ctx_size ?? 0}
                                             onChange={e => handleChange('model', 'ctx_size', e.target.value, 'number')}
                                             className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                         />
@@ -922,7 +945,7 @@ function SettingsModal({
                                             <label className="block text-sm opacity-80 mb-1">Temperature</label>
                                             <input
                                                 type="number" step="0.1"
-                                                value={config.model?.temperature || 0}
+                                                value={config.model?.temperature ?? 0}
                                                 onChange={e => handleChange('model', 'temperature', e.target.value, 'float')}
                                                 className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                             />
@@ -931,7 +954,7 @@ function SettingsModal({
                                             <label className="block text-sm opacity-80 mb-1">Top_p</label>
                                             <input
                                                 type="number" step="0.05"
-                                                value={config.model?.top_p || 0}
+                                                value={config.model?.top_p ?? 0}
                                                 onChange={e => handleChange('model', 'top_p', e.target.value, 'float')}
                                                 className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                             />
@@ -1086,7 +1109,7 @@ function SettingsModal({
                                             <label className="block text-sm opacity-80 mb-1">Скорость речи</label>
                                             <input
                                                 type="number" min="0.5" max="2" step="0.05"
-                                                value={config.tts?.speed || 1.15}
+                                                value={config.tts?.speed ?? 1.15}
                                                 onChange={e => handleChange('tts', 'speed', e.target.value, 'float')}
                                                 className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                             />
@@ -1115,7 +1138,7 @@ function SettingsModal({
                                             <label className="block text-sm opacity-80 mb-1">Качество синтеза</label>
                                             <input
                                                 type="number" min="1" max="10"
-                                                value={config.tts?.total_steps || 4}
+                                                value={config.tts?.total_steps ?? 4}
                                                 onChange={e => handleChange('tts', 'total_steps', e.target.value, 'number')}
                                                 className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                             />
@@ -1134,7 +1157,7 @@ function SettingsModal({
                                         <label className="block text-sm opacity-80 mb-1">Лимит контекста поиска</label>
                                         <input
                                             type="number"
-                                            value={config.web_search?.total_context_limit || 0}
+                                            value={config.web_search?.total_context_limit ?? 0}
                                             onChange={e => handleChange('web_search', 'total_context_limit', e.target.value, 'number')}
                                             className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                         />
@@ -2126,6 +2149,7 @@ function ProjectsView({ onClose }: { onClose: () => void }) {
     const [projects, setProjects] = useState<ProjectEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [deletingPath, setDeletingPath] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
         if (!ipcRenderer) return;
@@ -2143,6 +2167,20 @@ function ProjectsView({ onClose }: { onClose: () => void }) {
     useEffect(() => {
         refresh();
     }, [refresh]);
+
+    const trashProject = useCallback(async (project: ProjectEntry) => {
+        if (!ipcRenderer || !window.confirm(`Переместить «${project.name}» в корзину?`)) return;
+        setDeletingPath(project.path);
+        setError('');
+        try {
+            await ipcRenderer.invoke('projects-trash', project.path);
+            setProjects(current => current.filter(item => item.path !== project.path));
+        } catch (deleteError) {
+            setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить проект');
+        } finally {
+            setDeletingPath(null);
+        }
+    }, []);
 
     return (
         <section className="projects-view no-drag-region">
@@ -2180,6 +2218,15 @@ function ProjectsView({ onClose }: { onClose: () => void }) {
                                 </button>
                                 <button type="button" onClick={() => ipcRenderer?.invoke('workspace-reveal-item', project.path)}>
                                     В проводнике
+                                </button>
+                                <button
+                                    type="button"
+                                    className="danger"
+                                    disabled={deletingPath === project.path}
+                                    onClick={() => void trashProject(project)}
+                                >
+                                    <Trash2 size={12} />
+                                    {deletingPath === project.path ? 'Удаление...' : 'Удалить'}
                                 </button>
                             </div>
                         </article>
@@ -2342,7 +2389,6 @@ function ChatView({
     const logSequenceRef = useRef(0);
     const logsEndRef = useRef<HTMLDivElement | null>(null);
     const dragDepthRef = useRef(0);
-    const newSessionShortcutAtRef = useRef(0);
     const agentReadyRef = useRef(false);
 
     useEffect(() => {
@@ -2563,27 +2609,6 @@ function ChatView({
         return created;
     }, []);
 
-    const createSessionFromShortcut = useCallback(() => {
-        const now = Date.now();
-        if (now - newSessionShortcutAtRef.current < 500) return;
-        newSessionShortcutAtRef.current = now;
-        startNewSession().catch(error => {
-            pushSystemMessage(`Не удалось создать новую сессию: ${error.message}`);
-        });
-    }, [pushSystemMessage, startNewSession]);
-
-    useEffect(() => {
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'n' || event.repeat) {
-                return;
-            }
-            event.preventDefault();
-            createSessionFromShortcut();
-        };
-        window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
-    }, [createSessionFromShortcut]);
-
     useEffect(() => {
         const onPaste = (event: ClipboardEvent) => {
             const clipboard = event.clipboardData;
@@ -2619,13 +2644,6 @@ function ChatView({
         window.addEventListener('paste', onPaste);
         return () => window.removeEventListener('paste', onPaste);
     }, [appendLog]);
-
-    useEffect(() => {
-        if (!ipcRenderer) return;
-        const onNewSessionShortcut = () => createSessionFromShortcut();
-        ipcRenderer.on('new-session-shortcut', onNewSessionShortcut);
-        return () => ipcRenderer.removeListener('new-session-shortcut', onNewSessionShortcut);
-    }, [createSessionFromShortcut]);
 
     useEffect(() => {
         if (sessionsInitializedRef.current) return;

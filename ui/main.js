@@ -64,6 +64,7 @@ function getChatBackgroundColor(themeId) {
         terminal: '#07100b',
         sakura: '#fff5f8',
         graphite: '#1c2027',
+        aurora: '#08151a',
     };
     return colors[themeId] || colors.obsidian;
 }
@@ -362,19 +363,6 @@ function createWindows() {
     chatWindow.on('enter-full-screen', sendWindowState);
     chatWindow.on('leave-full-screen', sendWindowState);
     chatWindow.webContents.on('did-finish-load', sendWindowState);
-    chatWindow.webContents.on('before-input-event', (event, input) => {
-        const isNewSessionShortcut = (
-            input.type === 'keyDown'
-            && !input.isAutoRepeat
-            && (input.control || input.meta)
-            && String(input.key || '').toLowerCase() === 'n'
-        );
-        if (isNewSessionShortcut) {
-            event.preventDefault();
-            chatWindow.webContents.send('new-session-shortcut');
-        }
-    });
-
     chatWindow.on('close', (e) => {
         if (!isQuitting) {
             isQuitting = true;
@@ -580,6 +568,23 @@ if (!gotSingleInstanceLock) {
                     };
                 }));
             return projects.sort((left, right) => right.updatedAt - left.updatedAt);
+        });
+
+        ipcMain.handle('projects-trash', async (_event, projectPath) => {
+            if (typeof projectPath !== 'string' || !projectPath.trim()) {
+                throw new Error('Invalid project path');
+            }
+            const projectsPath = path.resolve(app.getPath('documents'), 'Vera', 'Projects');
+            const resolvedPath = path.resolve(projectPath);
+            if (path.dirname(resolvedPath) !== projectsPath) {
+                throw new Error('File is outside the projects directory');
+            }
+            const stats = await fs.promises.stat(resolvedPath);
+            if (!stats.isFile() || path.extname(resolvedPath).toLowerCase() !== '.pptx') {
+                throw new Error('Project file does not exist');
+            }
+            await shell.trashItem(resolvedPath);
+            return true;
         });
 
         ipcMain.handle('terminal-start', (_event, cwd) => startTerminal(cwd));

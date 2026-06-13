@@ -14,6 +14,7 @@ const SEND_CHANNELS = new Set([
 
 const INVOKE_CHANNELS = new Set([
     'projects-list',
+    'projects-trash',
     'terminal-start',
     'workspace-list-directory',
     'workspace-open-file',
@@ -24,7 +25,6 @@ const INVOKE_CHANNELS = new Set([
 
 const RECEIVE_CHANNELS = new Set([
     'backend-status',
-    'new-session-shortcut',
     'terminal-exit',
     'terminal-output',
     'theme-changed',

@@ -167,6 +167,39 @@
     --vera-workspace-shadow: 0 18px 55px rgba(0, 0, 0, 0.34);
 }
 
+:root[data-vera-theme="aurora"] {
+    --vera-bg: #08151a;
+    --vera-bg-soft: #0b1d23;
+    --vera-panel: rgba(10, 29, 35, 0.93);
+    --vera-panel-strong: rgba(13, 35, 42, 0.97);
+    --vera-widget-surface: #102a31;
+    --vera-panel-muted: rgba(94, 234, 212, 0.07);
+    --vera-border: rgba(148, 225, 219, 0.15);
+    --vera-border-strong: rgba(167, 139, 250, 0.34);
+    --vera-text: #edfffb;
+    --vera-muted: rgba(237, 255, 251, 0.62);
+    --vera-faint: rgba(237, 255, 251, 0.34);
+    --vera-accent: #5eead4;
+    --vera-accent-2: #a78bfa;
+    --vera-user: rgba(94, 234, 212, 0.14);
+    --vera-assistant: rgba(167, 139, 250, 0.07);
+    --vera-shadow: 0 24px 80px rgba(0, 0, 0, 0.52);
+    --vera-workspace-shell-bg: #08151a;
+    --vera-workspace-main-bg: #0c1d23;
+    --vera-workspace-sidebar-bg: #071217;
+    --vera-workspace-panel-soft: #10262d;
+    --vera-workspace-line: #24434a;
+    --vera-workspace-title: #edfffb;
+    --vera-workspace-text: #b9d9d5;
+    --vera-workspace-subtle: #83aaa7;
+    --vera-workspace-accent: #5eead4;
+    --vera-workspace-hover: #153139;
+    --vera-workspace-active: #193a42;
+    --vera-workspace-input-bg: #0d2228;
+    --vera-workspace-input-line: #376c6a;
+    --vera-workspace-shadow: 0 18px 55px rgba(0, 0, 0, 0.4);
+}
+
 html,
 body,
 #root {
@@ -2023,6 +2056,24 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
 .project-card-actions button:hover {
     border-color: var(--vera-workspace-accent);
     color: var(--vera-workspace-accent);
+}
+
+.project-card-actions button.danger {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    color: #f38b8b;
+}
+
+.project-card-actions button.danger:hover {
+    border-color: rgba(243, 139, 139, 0.7);
+    color: #ffb0b0;
+}
+
+.project-card-actions button:disabled {
+    cursor: wait;
+    opacity: 0.55;
 }
 
 .projects-empty,

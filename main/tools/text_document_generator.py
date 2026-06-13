@@ -190,4 +190,5 @@ def execute_text_document_creation(
         if online_used
         else " Интернет-данные получить не удалось, использованы локальные знания."
     )
-    return f"{result}.{source_note}", file_path
+    result_text = f"Документ сохранён: {file_path}" if file_path else str(result)
+    return f"{result_text}.{source_note}", file_path
