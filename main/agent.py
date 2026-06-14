@@ -311,10 +311,6 @@ def _safe_shutdown():
     
     if 'memory_manager' in g:
         try:
-            # Сохраняем краткое содержание сессии перед выходом
-            summary = memory_manager.get_context_for_prompt()
-            if summary:
-                memory_manager.update_session_summary(summary)
             g['memory_manager'].save()
             print("[SAVE] Память сохранена")
         except Exception as e:
@@ -826,15 +822,11 @@ DATA_DIR.mkdir(exist_ok=True)
 audit_logger = get_audit_logger(DATA_DIR / "audit" / "actions.jsonl")
 
 
-memory_manager = MemoryManager(DATA_DIR / "MEMORY.md")
+memory_manager = MemoryManager(DATA_DIR / "memory.json")
 session_store = SessionStore(DATA_DIR / "vera.db")
-try:
-    session_store.import_legacy_dialog(memory_manager.get_last_dialog())
-except Exception as e:
-    print(f"[SESSIONS] Ошибка импорта старого диалога: {e}")
 
 print(f"[INFO] Модули задач и памяти инициализированы.")
-print(f"[MEMORY] История диалога: {memory_manager.memory_path}")
+print(f"[MEMORY] Хранилище: {memory_manager.memory_path}")
 
 # Обработчик команд памяти (замена execute_profile_command)
 def execute_memory_command(text: str) -> Optional[str]:
@@ -1442,6 +1434,38 @@ def ask_llm(
             gen_args["tools"] = selected_tools
             gen_args["tool_choice"] = "auto"
 
+    def _message_text(message: dict) -> str:
+        content = message.get("content") or ""
+        if isinstance(content, list):
+            content = "".join(
+                str(part.get("text") or "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        return re.sub(r"<think>.*?</think>", "", str(content), flags=re.DOTALL).strip()
+
+    def _retry_without_thinking() -> Optional[dict]:
+        retry_messages = [dict(message) for message in messages]
+        if retry_messages and retry_messages[0].get("role") == "system":
+            retry_messages[0]["content"] = (
+                str(retry_messages[0].get("content") or "")
+                + "\n\nОтветь сразу финальным текстом. Не показывай рассуждения и не оставляй ответ пустым."
+            )
+        retry_args = dict(gen_args)
+        retry_args["stream"] = False
+        retry_args["chat_template_kwargs"] = {"enable_thinking": False}
+        retry_args["reasoning_budget"] = 0
+        try:
+            retry_args["max_tokens"] = max(256, int(retry_args.get("max_tokens") or 0))
+        except Exception:
+            retry_args["max_tokens"] = 256
+        try:
+            print("[LLM] Модель не выдала финальный текст; повтор без размышления.")
+            retry_result = llm.create_chat_completion(messages=retry_messages, **retry_args)
+            return retry_result.get("choices", [{}])[0].get("message", {})
+        except Exception as retry_error:
+            print(f"[LLM] Ошибка повторного запроса без размышления: {retry_error}")
+            return None
+
     use_stream = (source == 'chat')
     if use_stream:
         gen_args["stream"] = True
@@ -1574,7 +1598,24 @@ def ask_llm(
         if final_reply:
             return final_reply
         if full_thoughts:
-            return "\u041d\u0435 \u043f\u043e\u043b\u0443\u0447\u0438\u043b\u0430 \u0444\u0438\u043d\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u043a\u0441\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438 \u043f\u043e\u0441\u043b\u0435 \u0440\u0430\u0441\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0439."
+            retry_message = _retry_without_thinking()
+            if retry_message:
+                retry_tool_calls = retry_message.get("tool_calls")
+                if retry_tool_calls:
+                    return _handle_tool_calls(
+                        retry_tool_calls,
+                        user_text=user_text,
+                        source=source,
+                        task_id=task_id,
+                        bypass_confirmation=bypass_confirmation,
+                        is_background=is_background,
+                        tool_loop_depth=_tool_loop_depth,
+                        file_name=file_name,
+                    )
+                retry_reply = _message_text(retry_message)
+                if retry_reply:
+                    return retry_reply
+            return "Модель завершила рассуждение без финального ответа."
         return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0439 \u043e\u0442\u0432\u0435\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438."
 
     message = result.get("choices", [{}])[0].get("message", {})
@@ -1617,7 +1658,24 @@ def ask_llm(
         return assistant_reply
 
     if reasoning_reply:
-        return "\u041d\u0435 \u043f\u043e\u043b\u0443\u0447\u0438\u043b\u0430 \u0444\u0438\u043d\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u043a\u0441\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438 \u043f\u043e\u0441\u043b\u0435 \u0440\u0430\u0441\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0439."
+        retry_message = _retry_without_thinking()
+        if retry_message:
+            retry_tool_calls = retry_message.get("tool_calls")
+            if retry_tool_calls:
+                return _handle_tool_calls(
+                    retry_tool_calls,
+                    user_text=user_text,
+                    source=source,
+                    task_id=task_id,
+                    bypass_confirmation=bypass_confirmation,
+                    is_background=is_background,
+                    tool_loop_depth=_tool_loop_depth,
+                    file_name=file_name,
+                )
+            retry_reply = _message_text(retry_message)
+            if retry_reply:
+                return retry_reply
+        return "Модель завершила рассуждение без финального ответа."
     return "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0439 \u043e\u0442\u0432\u0435\u0442 \u043e\u0442 \u043c\u043e\u0434\u0435\u043b\u0438."
 
 

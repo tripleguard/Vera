@@ -1959,7 +1959,7 @@ function WorkspacePanel({
     useEffect(() => {
         if (mode !== 'terminal' || !ipcRenderer || terminalRunning || terminalStartedRef.current) return;
         terminalStartedRef.current = true;
-        ipcRenderer.invoke<{ cwd?: string }>('terminal-start', rootPath || null)
+        ipcRenderer.invoke<{ cwd?: string }>('terminal-start')
             .then(result => {
                 setTerminalRunning(true);
                 setTerminalOutput(previous => previous || `CMD · ${result?.cwd || ''}\r\n`);
@@ -1968,7 +1968,7 @@ function WorkspacePanel({
                 terminalStartedRef.current = false;
                 setTerminalOutput(previous => `${previous}[Не удалось запустить CMD] ${error.message}\r\n`);
             });
-    }, [mode, rootPath, terminalRunning]);
+    }, [mode, terminalRunning]);
 
     useEffect(() => {
         terminalEndRef.current?.scrollIntoView({ block: 'end' });

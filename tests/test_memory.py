@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import sys
+import json
 from pathlib import Path
 
 
@@ -15,7 +16,7 @@ from user.memory import MemoryManager, MAX_FACTS
 class MemoryManagerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.memory_path = Path(self.tmp.name) / "MEMORY.md"
+        self.memory_path = Path(self.tmp.name) / "memory.json"
         self.manager = MemoryManager(self.memory_path)
 
     def tearDown(self):
@@ -81,6 +82,24 @@ class MemoryManagerTests(unittest.TestCase):
 
         self.assertEqual(len(hits), 1)
         self.assertIn("memory panel", hits[0][0]["text"])
+
+    def test_json_is_the_only_storage_and_drops_legacy_dialog_fields(self):
+        self.memory_path.write_text(
+            json.dumps({
+                "profile": {"имя": "Тимур"},
+                "facts": [],
+                "last_session_summary": "legacy",
+                "last_dialog_messages": [{"role": "user", "content": "legacy"}],
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        manager = MemoryManager(self.memory_path)
+        manager.save()
+        stored = json.loads(self.memory_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(stored, {"profile": {"имя": "Тимур"}, "facts": []})
+        self.assertFalse((self.memory_path.parent / "MEMORY.md").exists())
 
 
 if __name__ == "__main__":

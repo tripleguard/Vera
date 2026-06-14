@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 MAX_CONTEXT_MESSAGES = 5
@@ -58,15 +58,12 @@ class SessionStore:
                     FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
                 );
 
-                CREATE TABLE IF NOT EXISTS session_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
                 CREATE INDEX IF NOT EXISTS idx_sessions_updated
                     ON sessions(archived, pinned DESC, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON messages(session_id, id);
+
+                DROP TABLE IF EXISTS session_meta;
                 """
             )
 
@@ -333,37 +330,6 @@ class SessionStore:
             {"role": message["role"], "content": message["content"]}
             for message in messages
         ]
-
-    def import_legacy_dialog(self, messages: Iterable[Dict[str, Any]]) -> Optional[str]:
-        with self._lock:
-            done = self._conn.execute(
-                "SELECT value FROM session_meta WHERE key = 'legacy_dialog_imported'"
-            ).fetchone()
-        if done:
-            return None
-        normalized = [
-            {
-                "role": str(item.get("role") or "user"),
-                "content": str(item.get("content") or "").strip(),
-            }
-            for item in messages
-            if isinstance(item, dict) and str(item.get("content") or "").strip()
-        ]
-        imported_id: Optional[str] = None
-        if normalized:
-            imported = self.create_session("Импортированный диалог", source="migration")
-            imported_id = imported["id"]
-            for item in normalized:
-                self.add_message(imported_id, item["role"], item["content"])
-        with self._lock, self._conn:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO session_meta (key, value)
-                VALUES ('legacy_dialog_imported', ?)
-                """,
-                (imported_id or "empty",),
-            )
-        return imported_id
 
     def close(self) -> None:
         with self._lock:

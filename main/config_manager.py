@@ -100,12 +100,12 @@ _DEFAULT_DATA_FILES = [
     "heartbeat_tasks.json",
     "reminders.json",
     "scheduled_apps.json",
-    "MEMORY.md",
+    "memory.json",
 ]
 
 _MUTABLE_FILES = [
     "config.json",
-    "MEMORY.md",
+    "memory.json",
     "heartbeat_tasks.json",
     "reminders.json",
     "scheduled_apps.json",
@@ -128,6 +128,7 @@ _FALLBACK_TEXT = {
     "SOUL.md": "# Soul\n\nBe concise, helpful, and safe.\n",
     "TOOLS.md": "# Tools\n\nUse available tools when needed.\n",
     "USER.md": "# User\n\nNo user profile yet.\n",
+    "memory.json": '{\n  "profile": {},\n  "facts": []\n}\n',
 }
 
 _DATA_LAYOUT_READY = False
@@ -280,14 +281,6 @@ def ensure_data_layout_and_migrate() -> Path:
 
         _DATA_LAYOUT_READY = True
         return data_dir
-
-
-def _get_project_root() -> Path:
-    """
-    Backward-compatible alias for old code paths.
-    Historically this function pointed to install root.
-    """
-    return get_install_root()
 
 
 def get_data_dir() -> Path:

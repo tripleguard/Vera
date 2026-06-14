@@ -80,23 +80,5 @@ class SessionStoreTests(unittest.TestCase):
         self.assertTrue(self.store.delete_session(session["id"]))
         self.assertEqual(self.store.get_messages(session["id"]), [])
 
-    def test_legacy_dialog_is_imported_once(self):
-        legacy = [
-            {"role": "user", "content": "Старый вопрос"},
-            {"role": "assistant", "content": "Старый ответ"},
-        ]
-
-        imported_id = self.store.import_legacy_dialog(legacy)
-        repeated = self.store.import_legacy_dialog(legacy)
-
-        self.assertIsNotNone(imported_id)
-        self.assertIsNone(repeated)
-        self.assertEqual(len(self.store.list_sessions()), 1)
-        self.assertEqual(
-            [item["content"] for item in self.store.get_messages(imported_id)],
-            ["Старый вопрос", "Старый ответ"],
-        )
-
-
 if __name__ == "__main__":
     unittest.main()

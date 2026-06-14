@@ -130,14 +130,26 @@ function stopTerminal() {
     }
 }
 
-function startTerminal(cwd) {
+function getTerminalRootDirectory() {
+    const systemDrive = String(process.env.SystemDrive || '').trim();
+    const candidates = [
+        systemDrive ? path.parse(`${systemDrive}\\`).root : '',
+        path.parse(process.execPath).root,
+        'C:\\',
+    ];
+    return candidates.find(candidate => (
+        candidate
+        && fs.existsSync(candidate)
+        && fs.statSync(candidate).isDirectory()
+    )) || app.getPath('home');
+}
+
+function startTerminal() {
     if (terminalProcess && !terminalProcess.killed) {
         return { running: true, cwd: terminalWorkingDirectory };
     }
 
-    const terminalCwd = cwd && fs.existsSync(cwd) && fs.statSync(cwd).isDirectory()
-        ? cwd
-        : app.getPath('home');
+    const terminalCwd = getTerminalRootDirectory();
     const command = process.env.ComSpec || 'cmd.exe';
 
     terminalProcess = spawn(command, ['/D', '/Q', '/K', 'chcp 65001>nul'], {
@@ -587,7 +599,7 @@ if (!gotSingleInstanceLock) {
             return true;
         });
 
-        ipcMain.handle('terminal-start', (_event, cwd) => startTerminal(cwd));
+        ipcMain.handle('terminal-start', () => startTerminal());
         ipcMain.on('terminal-input', (_event, input) => {
             if (!terminalProcess || terminalProcess.killed || typeof input !== 'string') {
                 return;

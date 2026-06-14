@@ -6,7 +6,7 @@ from dataclasses import dataclass, asdict
 from user.json_storage import load_json, save_json
 from main.lang_ru import replace_number_words
 from main.config_manager import get_data_dir
-from .scheduler_base import SchedulerBase, TIME_FORMAT, now_str, parse_time_str
+from .scheduler_base import SchedulerBase, now_str, parse_time_str
 import os
 
 _HEARTBEAT_FILE = get_data_dir() / "heartbeat_tasks.json"

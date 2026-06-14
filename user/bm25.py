@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 
 # Минимальная длина токена (фильтрует короткие служебные слова и шум).

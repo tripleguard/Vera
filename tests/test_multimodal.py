@@ -13,12 +13,16 @@ class _Config:
 
 class _Response:
     text = ""
+    encoding = None
 
     def raise_for_status(self):
         return None
 
     def json(self):
         return {"choices": [{"message": {"content": "ok"}}]}
+
+    def close(self):
+        return None
 
 
 class MultimodalTests(unittest.TestCase):
@@ -50,11 +54,59 @@ class MultimodalTests(unittest.TestCase):
             ],
         }]
 
-        with patch("main.llm_server.requests.post", return_value=_Response()) as post:
-            result = LlamaClient(port=9999).create_chat_completion(messages=messages)
+        client = LlamaClient(port=9999)
+        with patch.object(client._session, "post", return_value=_Response()) as post:
+            result = client.create_chat_completion(messages=messages)
 
         self.assertEqual(result["choices"][0]["message"]["content"], "ok")
         self.assertEqual(post.call_args.kwargs["json"]["messages"], messages)
+
+    def test_stream_parser_uses_low_latency_chunks_and_closes_response(self):
+        class _StreamResponse(_Response):
+            def __init__(self):
+                self.iter_lines_kwargs = None
+                self.closed = False
+
+            def iter_lines(self, **kwargs):
+                self.iter_lines_kwargs = kwargs
+                yield 'data: {"choices":[{"delta":{"content":"ok"}}]}'
+                yield "data: [DONE]"
+
+            def close(self):
+                self.closed = True
+
+        response = _StreamResponse()
+        chunks = list(LlamaClient(port=9999)._parse_stream(response))
+
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "ok")
+        self.assertEqual(
+            response.iter_lines_kwargs,
+            {"chunk_size": 64, "decode_unicode": True},
+        )
+        self.assertTrue(response.closed)
+
+    def test_local_server_enables_prompt_cache_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "llama-server.exe").write_bytes(b"")
+            (root / "Qwen-2B.gguf").write_bytes(b"model")
+
+            with (
+                patch("main.llm_server.get_install_root", return_value=root),
+                patch("main.llm_server.get_config", return_value=_Config()),
+                patch("main.llm_server.subprocess.Popen") as popen,
+                patch.object(LlamaServer, "_wait_for_health", return_value=True),
+                patch("main.llm_server._assign_to_job_object", return_value=0),
+            ):
+                process = popen.return_value
+                process.poll.return_value = None
+                server = LlamaServer()
+                server.start()
+                server._process = None
+
+            command = popen.call_args.args[0]
+            reuse_index = command.index("--cache-reuse")
+            self.assertEqual(command[reuse_index + 1], "256")
 
     def test_incompatible_mmproj_is_not_attached(self):
         with tempfile.TemporaryDirectory() as tmp:

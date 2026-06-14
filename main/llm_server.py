@@ -6,8 +6,6 @@
 """
 
 import atexit
-import glob
-import os
 import subprocess
 import sys
 import time
@@ -154,6 +152,7 @@ class LlamaServer:
             "--parallel", "1",
             "--jinja",
             "--fit", "on",
+            "--cache-reuse", "256",
         ]
         if self.mmproj_path:
             cmd.extend(["--mmproj", str(self.mmproj_path)])
@@ -467,20 +466,25 @@ class LlamaClient:
             self._base_url = f"http://{host}:{port}"
         api_prefix = self._base_url if self._base_url.endswith("/v1") else f"{self._base_url}/v1"
         self._chat_url = f"{api_prefix}/chat/completions"
+        self._session = requests.Session()
 
     def _parse_stream(self, response: requests.Response) -> Iterator[Dict[str, Any]]:
-        for line in response.iter_lines():
-            if not line:
-                continue
-            line_str = line.decode("utf-8")
-            if line_str.startswith("data: "):
-                data_str = line_str[6:].strip()
-                if data_str == "[DONE]":
-                    break
-                try:
-                    yield json.loads(data_str)
-                except json.JSONDecodeError:
+        response.encoding = "utf-8"
+        try:
+            # The 512-byte requests default can buffer several small SSE events.
+            for line in response.iter_lines(chunk_size=64, decode_unicode=True):
+                if not line:
                     continue
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        yield json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+        finally:
+            response.close()
 
     def create_chat_completion(
         self,
@@ -508,7 +512,7 @@ class LlamaClient:
 
         try:
             is_streaming = payload.get("stream", False)
-            response = requests.post(
+            response = self._session.post(
                 self._chat_url,
                 json=payload,
                 timeout=self._REQUEST_TIMEOUT,

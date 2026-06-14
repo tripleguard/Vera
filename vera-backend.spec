@@ -108,7 +108,7 @@ datas = [
     (os.path.join('data', 'SOUL.md'), os.path.join('data')),
     (os.path.join('data', 'TOOLS.md'), os.path.join('data')),
     (os.path.join('data', 'USER.md'), os.path.join('data')),
-    (os.path.join('data', 'MEMORY.md'), os.path.join('data')),
+    (os.path.join('data', 'memory.json'), os.path.join('data')),
     (os.path.join('data', 'config.json'), os.path.join('data')),
     (os.path.join('data', 'heartbeat_tasks.json'), os.path.join('data')),
     (os.path.join('data', 'reminders.json'), os.path.join('data')),

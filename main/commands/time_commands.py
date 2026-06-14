@@ -2,7 +2,6 @@ import re
 import time
 import datetime
 import threading
-import winsound
 from typing import Optional, Callable
 from dataclasses import dataclass, asdict
 from main.lang_ru import TIME_UNITS, replace_number_words
