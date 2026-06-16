@@ -17,7 +17,7 @@ from main.llm_server import LlamaServer, LlamaClient
 import msvcrt
 from functools import partial
 from web.web_search import web_search_answer, execute_wikipedia_command
-from web.weather import execute_weather_command
+from web.weather import execute_weather_command, set_default_city_provider
 from web.currency import execute_currency_command
 from .lang_ru import convert_years_in_text
 from .commands import HANDLERS, set_speak_callback, set_last_search_urls_ref, stop_timer_ring, is_timer_ringing, set_timer_ws_callback
@@ -471,54 +471,30 @@ _external_url = _model_cfg.get("external_api_url", "http://127.0.0.1:1234/v1")
 
 _thinking_lock = threading.Lock()
 _thinking_enabled = bool(_model_cfg.get("thinking_enabled", True))
-_reasoning_budget = _model_cfg.get("reasoning_budget", 1024)
-_max_thought_chars = _model_cfg.get("max_thought_chars", 4000)
+_thinking_budget_tokens = _model_cfg.get("thinking_budget_tokens", 1024)
 
 
-def _coerce_reasoning_budget(value, default: int) -> int:
+def _coerce_thinking_budget(value, default: int) -> int:
     try:
         budget = int(value)
     except Exception:
         return default
-    if budget < -1:
-        return -1
-    return budget
+    return max(0, min(32768, budget))
 
 
-def _coerce_max_thought_chars(value, default: int) -> int:
-    try:
-        limit = int(value)
-    except Exception:
-        return default
-    if limit <= 0:
-        return default
-    return limit
-
-
-_reasoning_budget = _coerce_reasoning_budget(_reasoning_budget, 1024)
-_max_thought_chars = _coerce_max_thought_chars(_max_thought_chars, 4000)
+_thinking_budget_tokens = _coerce_thinking_budget(_thinking_budget_tokens, 1024)
 
 
 def get_thinking_mode() -> dict:
     with _thinking_lock:
-        return {
-            "enabled": _thinking_enabled,
-            "reasoning_budget": _reasoning_budget,
-            "max_thought_chars": _max_thought_chars,
-        }
+        return {"enabled": _thinking_enabled}
 
 
-def set_thinking_mode(enabled: bool, reasoning_budget: Optional[int] = None) -> dict:
-    global _thinking_enabled, _reasoning_budget
+def set_thinking_mode(enabled: bool) -> dict:
+    global _thinking_enabled
     with _thinking_lock:
         _thinking_enabled = bool(enabled)
-        if reasoning_budget is not None:
-            _reasoning_budget = _coerce_reasoning_budget(reasoning_budget, _reasoning_budget)
-        state = {
-            "enabled": _thinking_enabled,
-            "reasoning_budget": _reasoning_budget,
-            "max_thought_chars": _max_thought_chars,
-        }
+        state = {"enabled": _thinking_enabled}
     _send_ws({"type": "thinking_mode", **state})
     return state
 
@@ -823,6 +799,7 @@ audit_logger = get_audit_logger(DATA_DIR / "audit" / "actions.jsonl")
 
 
 memory_manager = MemoryManager(DATA_DIR / "memory.json")
+set_default_city_provider(lambda: memory_manager.get_profile("город"))
 session_store = SessionStore(DATA_DIR / "vera.db")
 
 print(f"[INFO] Модули задач и памяти инициализированы.")
@@ -1109,7 +1086,7 @@ def _command_worker():
                 print(f"[Вера] {response}")
             except UnicodeEncodeError:
                 try:
-                    print(f"[Вера] {response.encode('cp1251', errors='replace').decode('cp1251')}")
+                    print(f"[Вера] {response}")
                 except Exception:
                     print("[Вера] (Нечитаемый ответ из-за кодировки консоли)")
 
@@ -1423,9 +1400,21 @@ def ask_llm(
 
     with _thinking_lock:
         thinking_enabled = _thinking_enabled
-        reasoning_budget = _reasoning_budget
+        thinking_budget_tokens = _thinking_budget_tokens
+    if thinking_enabled and thinking_budget_tokens > 0:
+        system_content += (
+            f"\n\nУ тебя есть не более {thinking_budget_tokens} токенов на внутреннее "
+            "рассуждение. Не повторяй условия и правила. Заранее подведи анализ "
+            "к завершению и оставь достаточно времени для ясного финального ответа."
+        )
+        messages[0]["content"] = system_content
+        if "max_tokens" in gen_args:
+            gen_args["max_tokens"] = max(
+                int(gen_args["max_tokens"]),
+                thinking_budget_tokens + 256,
+            )
     gen_args["chat_template_kwargs"] = {"enable_thinking": bool(thinking_enabled)}
-    gen_args["reasoning_budget"] = reasoning_budget if thinking_enabled else 0
+    gen_args["thinking_budget_tokens"] = thinking_budget_tokens if thinking_enabled else 0
 
     effective_allow_tools = allow_tools and not image_data_url and not (intent and intent.plain_code)
     if effective_allow_tools:
@@ -1441,7 +1430,15 @@ def ask_llm(
                 str(part.get("text") or "") if isinstance(part, dict) else str(part)
                 for part in content
             )
-        return re.sub(r"<think>.*?</think>", "", str(content), flags=re.DOTALL).strip()
+        text = re.sub(r"<think>.*?</think>", "", str(content), flags=re.DOTALL)
+        return re.sub(r"<think>.*$", "", text, flags=re.DOTALL).strip()
+
+    def _clean_generated_text(text: str) -> str:
+        clean = str(text or "").replace("\ufffd", "")
+        clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL)
+        clean = re.sub(r"^.*?</think>", "", clean, flags=re.DOTALL)
+        clean = re.sub(r"<think>.*$", "", clean, flags=re.DOTALL)
+        return clean.strip()
 
     def _retry_without_thinking() -> Optional[dict]:
         retry_messages = [dict(message) for message in messages]
@@ -1453,7 +1450,7 @@ def ask_llm(
         retry_args = dict(gen_args)
         retry_args["stream"] = False
         retry_args["chat_template_kwargs"] = {"enable_thinking": False}
-        retry_args["reasoning_budget"] = 0
+        retry_args["thinking_budget_tokens"] = 0
         try:
             retry_args["max_tokens"] = max(256, int(retry_args.get("max_tokens") or 0))
         except Exception:
@@ -1488,6 +1485,7 @@ def ask_llm(
         full_response = ""
         full_thoughts = ""
         in_think = False
+        saw_thought = False
         streamed_tool_calls: dict[int, dict] = {}
 
         def _append_chat(chunk_text: str):
@@ -1498,20 +1496,19 @@ def ask_llm(
             _send_ws({"type": "chat_chunk", "text": chunk_text})
 
         def _append_thought(chunk_text: str):
-            nonlocal full_thoughts
-            if not chunk_text:
+            nonlocal full_thoughts, saw_thought
+            if not chunk_text or not thinking_enabled:
                 return
-            if not thinking_enabled:
+            clean = str(chunk_text).replace("\ufffd", "").strip()
+            if not clean:
+                saw_thought = True
                 return
-            remaining = _max_thought_chars - len(full_thoughts)
-            if remaining <= 0:
-                return
-            safe_chunk = chunk_text[:remaining]
-            full_thoughts += safe_chunk
-            _send_ws({"type": "thought_chunk", "text": safe_chunk})
+            full_thoughts += clean
+            saw_thought = True
+            _send_ws({"type": "thought_chunk", "text": clean})
 
         def _process_content_chunk(chunk_text: str):
-            nonlocal in_think
+            nonlocal in_think, saw_thought
             if not chunk_text:
                 return
             while chunk_text:
@@ -1525,12 +1522,19 @@ def ask_llm(
                     in_think = False
                 else:
                     start_idx = chunk_text.find("<think>")
+                    end_idx = chunk_text.find("</think>")
+                    if end_idx != -1 and (start_idx == -1 or end_idx < start_idx):
+                        _append_thought(chunk_text[:end_idx])
+                        chunk_text = chunk_text[end_idx + len("</think>"):]
+                        in_think = False
+                        continue
                     if start_idx == -1:
-                        _append_chat(chunk_text)
+                        _append_chat(_clean_generated_text(chunk_text))
                         break
-                    _append_chat(chunk_text[:start_idx])
+                    _append_chat(_clean_generated_text(chunk_text[:start_idx]))
                     chunk_text = chunk_text[start_idx + len("<think>"):]
                     in_think = True
+                    saw_thought = True
 
         def _merge_tool_call_delta(delta_tool_calls):
             if not isinstance(delta_tool_calls, list):
@@ -1597,7 +1601,7 @@ def ask_llm(
         final_reply = full_response.strip()
         if final_reply:
             return final_reply
-        if full_thoughts:
+        if saw_thought:
             retry_message = _retry_without_thinking()
             if retry_message:
                 retry_tool_calls = retry_message.get("tool_calls")
@@ -1633,8 +1637,6 @@ def ask_llm(
         )
 
     reasoning_reply = (message.get("reasoning_content") or "").strip()
-    if thinking_enabled and reasoning_reply:
-        _send_ws({"type": "thought_chunk", "text": reasoning_reply[:_max_thought_chars]})
 
     assistant_content = message.get("content") or ""
     if isinstance(assistant_content, list):
@@ -1647,13 +1649,12 @@ def ask_llm(
         assistant_content = "".join(parts)
     assistant_content = str(assistant_content)
 
-    if thinking_enabled:
-        for think_part in re.findall(r"<think>(.*?)</think>", assistant_content, flags=re.DOTALL):
-            clean_think = think_part.strip()
-            if clean_think:
-                _send_ws({"type": "thought_chunk", "text": clean_think[:_max_thought_chars]})
+    if thinking_enabled and reasoning_reply:
+        clean_reasoning = str(reasoning_reply).replace("\ufffd", "").strip()
+        if clean_reasoning:
+            _send_ws({"type": "thought_chunk", "text": clean_reasoning})
 
-    assistant_reply = re.sub(r"<think>.*?</think>", "", assistant_content, flags=re.DOTALL).strip()
+    assistant_reply = _clean_generated_text(assistant_content)
     if assistant_reply:
         return assistant_reply
 

@@ -120,7 +120,7 @@ def generate_document_content(
         temperature=0.35,
         top_p=0.85,
         chat_template_kwargs={"enable_thinking": False},
-        reasoning_budget=0,
+        thinking_budget_tokens=0,
     )
     message = result.get("choices", [{}])[0].get("message", {})
     content = message.get("content") or ""

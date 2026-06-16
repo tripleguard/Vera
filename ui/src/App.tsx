@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Paperclip, X, ExternalLink, FolderOpen, FileText, FileStack, Mic, MicOff, Brain, ChevronDown, ChevronUp, ChevronRight, Check, Pin, Trash2, Search, Database, Plus, Save, PanelRight, PanelLeft, Palette, Cpu, Volume2, Globe2, Clock3, SlidersHorizontal, Minus, Maximize2, Minimize2, TerminalSquare, UploadCloud, Folder, File as FileIcon, RefreshCw, Boxes, Wrench } from 'lucide-react';
+import { Paperclip, X, ExternalLink, FolderOpen, FileText, FileStack, Mic, MicOff, Brain, ChevronDown, ChevronUp, ChevronRight, Pin, Trash2, Search, Database, Plus, Save, PanelRight, PanelLeft, Palette, Cpu, Volume2, Globe2, Clock3, SlidersHorizontal, Minus, Maximize2, Minimize2, TerminalSquare, UploadCloud, Folder, File as FileIcon, RefreshCw, Boxes, Wrench } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { connectSocketWithReconnect } from './services/socketService';
 import { SessionPanelWindow } from './components/SessionPanelWindow';
@@ -257,33 +257,6 @@ interface MemoryPayload {
     categories: string[];
 }
 
-function ThinkingBlock({ thoughts, isLightMode }: { thoughts: string, isLightMode: boolean }) {
-    const [isExpanded, setIsExpanded] = useState(false);
-
-    if (!thoughts) return null;
-
-    return (
-        <div className="thinking-line">
-            <button
-                onClick={(e) => {
-                    e.stopPropagation();
-                    setIsExpanded(!isExpanded);
-                }}
-                className="thinking-line-toggle"
-                aria-expanded={isExpanded}
-            >
-                <span>Думает</span>
-                {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            </button>
-            {isExpanded && (
-                <div className={`thinking-line-content ${isLightMode ? 'light' : ''}`}>
-                    {thoughts}
-                </div>
-            )}
-        </div>
-    );
-}
-
 function CodeBlock({ code, language, isLightMode }: { code: string, language: string, isLightMode: boolean }) {
     const [copied, setCopied] = useState(false);
 
@@ -376,6 +349,70 @@ function AssistantMessageText({ text, isLightMode }: { text: string, isLightMode
     );
 }
 
+function ThinkingBlock({ thoughts, isLightMode }: { thoughts: string; isLightMode: boolean }) {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const cleanThoughts = thoughts.trim();
+    if (!cleanThoughts) return null;
+
+    return (
+        <div className={`thinking-card ${isLightMode ? 'light' : ''}`}>
+            <button
+                type="button"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    setIsExpanded(!isExpanded);
+                }}
+                className="thinking-card-toggle"
+                aria-expanded={isExpanded}
+            >
+                <span className="thinking-card-icon">
+                    <Brain size={13} />
+                </span>
+                <span className="thinking-card-title">Ход мысли</span>
+                <span className="thinking-card-meta">
+                    {isExpanded ? 'Скрыть' : 'Показать'}
+                </span>
+                {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+            {isExpanded && (
+                <div className="thinking-card-content">
+                    {cleanThoughts}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function SettingsToggle({
+    checked,
+    onChange,
+    label,
+    description,
+}: {
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+    label: string;
+    description?: string;
+}) {
+    return (
+        <button
+            type="button"
+            role="switch"
+            aria-checked={checked}
+            onClick={() => onChange(!checked)}
+            className={`settings-toggle-row ${checked ? 'active' : ''}`}
+        >
+            <span className="settings-toggle-copy">
+                <strong>{label}</strong>
+                {description && <span>{description}</span>}
+            </span>
+            <span className="settings-switch" aria-hidden="true">
+                <span className="settings-switch-thumb" />
+            </span>
+        </button>
+    );
+}
+
 function SettingsModal({
     isOpen,
     onClose,
@@ -427,7 +464,17 @@ function SettingsModal({
                 veraFetch('http://127.0.0.1:8000/api/memory').then(res => res.json())
             ])
                 .then(([cfgData, tasksData, memoryData]) => {
-                    setConfig(cfgData);
+                    const normalizedConfig = {
+                        ...cfgData,
+                        model: {
+                            ...(cfgData?.model || {}),
+                            thinking_budget_tokens: Math.max(
+                                0,
+                                Math.min(32768, Number(cfgData?.model?.thinking_budget_tokens ?? 1024)),
+                            ),
+                        },
+                    };
+                    setConfig(normalizedConfig);
                     setTasks(Array.isArray(tasksData) ? tasksData : []);
                     setMemory({
                         profile: memoryData?.profile || {},
@@ -453,8 +500,7 @@ function SettingsModal({
             config?.model?.ctx_size,
             config?.model?.temperature,
             config?.model?.top_p,
-            config?.model?.reasoning_budget,
-            config?.model?.max_thought_chars,
+            config?.model?.thinking_budget_tokens,
             config?.tts?.volume,
             config?.tts?.speed,
             config?.tts?.total_steps,
@@ -773,7 +819,9 @@ function SettingsModal({
                                         >
                                             <div className="flex items-center justify-between gap-2">
                                                 <span className="font-medium">{theme.name}</span>
-                                                {currentThemeId === theme.id && <Check size={14} />}
+                                                {currentThemeId === theme.id && (
+                                                    <span className="theme-selected-label">Выбрано</span>
+                                                )}
                                             </div>
                                             <div className="mt-2 flex gap-1.5">
                                                 {theme.swatches.map(color => (
@@ -847,16 +895,19 @@ function SettingsModal({
                                             className="bg-transparent border-none px-2 py-1.5 text-sm focus:outline-none flex-1"
                                         />
                                     </div>
-                                    <select
-                                        value={memoryCategory}
-                                        onChange={e => setMemoryCategory(e.target.value)}
-                                        className="memory-category-select"
-                                    >
-                                        <option value="all">Все категории</option>
-                                        {(memory?.categories || []).map(category => (
-                                            <option key={category} value={category}>{getCategoryLabel(category)}</option>
-                                        ))}
-                                    </select>
+                                    <div className="settings-select-shell">
+                                        <select
+                                            value={memoryCategory}
+                                            onChange={e => setMemoryCategory(e.target.value)}
+                                            className="memory-category-select"
+                                            aria-label="Категория памяти"
+                                        >
+                                            <option value="all">Все категории</option>
+                                            {(memory?.categories || []).map(category => (
+                                                <option key={category} value={category}>{getCategoryLabel(category)}</option>
+                                            ))}
+                                        </select>
+                                    </div>
                                 </div>
                                 <div className="memory-facts-list">
                                     {!memory ? (
@@ -902,7 +953,7 @@ function SettingsModal({
                             <div className="settings-separator" />
                             {/* General */}
                             <section id="settings-general" className="settings-anchor">
-                                <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest mb-4">Общие</h3>
+                                <h3 className="settings-section-title">Общие</h3>
                                 <div className="space-y-4">
                                     <div>
                                         <label className="block text-sm opacity-80 mb-1">Активационное слово</label>
@@ -929,7 +980,7 @@ function SettingsModal({
 
                             {/* LLM Model */}
                             <section id="settings-model" className="settings-anchor">
-                                <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest mb-4">Модель (LLM)</h3>
+                                <h3 className="settings-section-title">Модель (LLM)</h3>
                                 <div className="space-y-4">
                                     <div>
                                         <label className="block text-sm opacity-80 mb-1">Размер контекста</label>
@@ -963,7 +1014,7 @@ function SettingsModal({
                                     <div className="space-y-3 pt-1 border-t border-white/5">
                                         <div>
                                             <label className="block text-sm opacity-80 mb-1">
-                                                Лимит размышления (reasoning_budget)
+                                                Бюджет размышления
                                             </label>
                                             <div className="flex items-center gap-2">
                                                 <input
@@ -971,63 +1022,32 @@ function SettingsModal({
                                                     min="0"
                                                     max="32768"
                                                     step="64"
-                                                    value={Math.max(0, config.model?.reasoning_budget ?? 1024)}
-                                                    onChange={e => handleChange('model', 'reasoning_budget', e.target.value, 'number')}
+                                                    value={Math.max(0, config.model?.thinking_budget_tokens ?? 1024)}
+                                                    onChange={e => handleChange('model', 'thinking_budget_tokens', e.target.value, 'number')}
                                                     className="flex-1 accent-blue-500"
                                                 />
                                                 <input
                                                     type="number"
-                                                    min="-1"
+                                                    min="0"
                                                     max="32768"
-                                                    value={config.model?.reasoning_budget ?? 1024}
-                                                    onChange={e => handleChange('model', 'reasoning_budget', e.target.value, 'number')}
+                                                    value={Math.max(0, config.model?.thinking_budget_tokens ?? 1024)}
+                                                    onChange={e => handleChange('model', 'thinking_budget_tokens', e.target.value, 'number')}
                                                     className="w-24 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-white/30"
                                                 />
                                             </div>
                                             <p className="text-[10px] opacity-40 mt-1">
-                                                До 32 768 токенов. `-1` = без отдельного лимита, `0` = без размышления.
-                                                Фактический предел зависит от контекста модели.
+                                                От 0 до 32 768 токенов. 0 отключает размышление.
                                             </p>
                                         </div>
 
-                                        <div>
-                                            <label className="block text-sm opacity-80 mb-1">
-                                                Лимит отображения мыслей (max_thought_chars)
-                                            </label>
-                                            <div className="flex items-center gap-2">
-                                                <input
-                                                    type="range"
-                                                    min="500"
-                                                    max="10000"
-                                                    step="100"
-                                                    value={config.model?.max_thought_chars ?? 4000}
-                                                    onChange={e => handleChange('model', 'max_thought_chars', e.target.value, 'number')}
-                                                    className="flex-1 accent-blue-500"
-                                                />
-                                                <input
-                                                    type="number"
-                                                    min="100"
-                                                    max="50000"
-                                                    value={config.model?.max_thought_chars ?? 4000}
-                                                    onChange={e => handleChange('model', 'max_thought_chars', e.target.value, 'number')}
-                                                    className="w-24 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-white/30"
-                                                />
-                                            </div>
-                                            <p className="text-[10px] opacity-40 mt-1">Ограничивает объем блока «Размышления модели» в чате</p>
-                                        </div>
                                     </div>
                                     <div className="pt-2 border-t border-white/5 space-y-4">
-                                        <div className="flex items-center justify-between">
-                                            <label className="text-sm opacity-80 cursor-pointer flex items-center gap-2">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={config.model?.use_external_server || false}
-                                                    onChange={e => handleChange('model', 'use_external_server', e.target.checked, 'boolean')}
-                                                    className="rounded bg-black/30 border-white/10"
-                                                />
-                                                Внешний LLM-сервер (Ollama/LM Studio)
-                                            </label>
-                                        </div>
+                                        <SettingsToggle
+                                            checked={config.model?.use_external_server || false}
+                                            onChange={checked => handleChange('model', 'use_external_server', checked, 'boolean')}
+                                            label="Внешний LLM-сервер"
+                                            description="Ollama, LM Studio или другой OpenAI-совместимый API"
+                                        />
                                         {config.model?.use_external_server && (
                                             <div>
                                                 <label className="block text-sm opacity-50 mb-1">API Base URL</label>
@@ -1116,23 +1136,25 @@ function SettingsModal({
                                         </div>
                                         <div>
                                             <label className="block text-sm opacity-80 mb-1">Голос</label>
-                                            <select
-                                                value={config.tts?.voice_name || 'Lily'}
-                                                onChange={e => handleChange('tts', 'voice_name', e.target.value, 'string')}
-                                                className="w-full bg-[#161616] border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30 text-white"
-                                            >
-                                                <option value="Lily">Вера (женский, рекомендуется)</option>
-                                                <option value="F1">Алиса (женский)</option>
-                                                <option value="F2">Мира (женский)</option>
-                                                <option value="F3">София (женский)</option>
-                                                <option value="F4">Ника (женский)</option>
-                                                <option value="F5">Ева (женский)</option>
-                                                <option value="M1">Максим (мужской)</option>
-                                                <option value="M2">Илья (мужской)</option>
-                                                <option value="M3">Даниил (мужской)</option>
-                                                <option value="M4">Кирилл (мужской)</option>
-                                                <option value="M5">Роман (мужской)</option>
-                                            </select>
+                                            <div className="settings-select-shell">
+                                                <select
+                                                    value={config.tts?.voice_name || 'Lily'}
+                                                    onChange={e => handleChange('tts', 'voice_name', e.target.value, 'string')}
+                                                    className="settings-select-control"
+                                                >
+                                                    <option value="Lily">Вера · рекомендуется</option>
+                                                    <option value="F1">Алиса · женский</option>
+                                                    <option value="F2">Мира · женский</option>
+                                                    <option value="F3">София · женский</option>
+                                                    <option value="F4">Ника · женский</option>
+                                                    <option value="F5">Ева · женский</option>
+                                                    <option value="M1">Максим · мужской</option>
+                                                    <option value="M2">Илья · мужской</option>
+                                                    <option value="M3">Даниил · мужской</option>
+                                                    <option value="M4">Кирилл · мужской</option>
+                                                    <option value="M5">Роман · мужской</option>
+                                                </select>
+                                            </div>
                                         </div>
                                         <div>
                                             <label className="block text-sm opacity-80 mb-1">Качество синтеза</label>
@@ -1151,7 +1173,7 @@ function SettingsModal({
 
                             {/* Web Search */}
                             <section id="settings-web" className="settings-anchor">
-                                <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest mb-4">Web Search</h3>
+                                <h3 className="settings-section-title">Веб-поиск</h3>
                                 <div className="space-y-4">
                                     <div>
                                         <label className="block text-sm opacity-80 mb-1">Лимит контекста поиска</label>
@@ -1170,7 +1192,7 @@ function SettingsModal({
                             {/* Sites */}
                             <section>
                                 <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest">Сайты</h3>
+                                    <h3 className="settings-section-title mb-0">Сайты</h3>
                                     <button
                                         onClick={handleAddSite}
                                         className="settings-add-button"
@@ -1181,24 +1203,27 @@ function SettingsModal({
                                 </div>
                                 <div className="space-y-3">
                                     {Object.entries(config.sites || {}).map(([key, value], idx) => (
-                                        <div key={idx} className="flex gap-2 items-center">
+                                        <div key={idx} className="settings-site-row">
                                             <input
                                                 type="text"
                                                 value={key}
                                                 placeholder="Активационное слово"
                                                 onChange={e => handleSiteChange(key, e.target.value, value as string, true)}
-                                                className="w-1/3 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
+                                                className="settings-site-name"
                                             />
                                             <input
                                                 type="text"
                                                 value={value as string}
                                                 placeholder="https://..."
                                                 onChange={e => handleSiteChange(key, key, e.target.value, false)}
-                                                className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
+                                                className="settings-site-url"
                                             />
                                             <button
+                                                type="button"
                                                 onClick={() => handleRemoveSite(key)}
-                                                className="p-2 opacity-50 hover:opacity-100 hover:bg-red-500/20 text-red-400 rounded-lg transition-all"
+                                                className="settings-site-remove"
+                                                aria-label={`Удалить сайт ${key}`}
+                                                title="Удалить сайт"
                                             >
                                                 <X size={16} />
                                             </button>
@@ -1217,7 +1242,7 @@ function SettingsModal({
                             {/* Periodic Tasks */}
                             <section id="settings-automation" className="settings-anchor">
                                 <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-sm font-semibold opacity-50 uppercase tracking-widest">Периодические задачи</h3>
+                                    <h3 className="settings-section-title mb-0">Периодические задачи</h3>
                                     <button
                                         onClick={handleAddTask}
                                         className="settings-add-button"
@@ -1228,7 +1253,7 @@ function SettingsModal({
                                 </div>
                                 <div className="space-y-4">
                                     {tasks.map((task, idx) => (
-                                        <div key={idx} className="flex flex-col gap-2 p-3 bg-white/5 rounded-lg border border-white/5">
+                                        <div key={idx} className={`settings-task-card ${task.enabled ? 'active' : ''}`}>
                                             <div className="flex items-center justify-between gap-2">
                                                 <input
                                                     type="text"
@@ -1238,15 +1263,16 @@ function SettingsModal({
                                                     placeholder="Текст задачи (например, выпей воду)"
                                                 />
                                                 <div className="flex items-center gap-2">
-                                                    <label className="text-sm flex items-center gap-1 cursor-pointer">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={task.enabled}
-                                                            onChange={e => handleTaskChange(idx, 'enabled', e.target.checked)}
-                                                            className="rounded bg-black/30 border-white/10"
-                                                        />
-                                                        <span className="opacity-80">Вкл</span>
-                                                    </label>
+                                                    <button
+                                                        type="button"
+                                                        role="switch"
+                                                        aria-checked={task.enabled}
+                                                        onClick={() => handleTaskChange(idx, 'enabled', !task.enabled)}
+                                                        className={`settings-switch compact ${task.enabled ? 'active' : ''}`}
+                                                        title={task.enabled ? 'Отключить задачу' : 'Включить задачу'}
+                                                    >
+                                                        <span className="settings-switch-thumb" />
+                                                    </button>
                                                     <button
                                                         onClick={() => handleRemoveTask(idx)}
                                                         className="p-1.5 opacity-50 hover:opacity-100 hover:bg-red-500/20 text-red-400 rounded-lg transition-all"
@@ -1257,17 +1283,19 @@ function SettingsModal({
                                                 </div>
                                             </div>
                                             <div className="flex flex-wrap gap-2">
-                                                <select
-                                                    value={task.recurring}
-                                                    onChange={e => handleTaskChange(idx, 'recurring', e.target.value)}
-                                                    className="bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-white/30"
-                                                >
-                                                    <option value="once">Один раз</option>
-                                                    <option value="daily">Ежедневно</option>
-                                                    <option value="weekdays">По будням</option>
-                                                    <option value="weekends">По выходным</option>
-                                                    <option value="interval">С интервалом</option>
-                                                </select>
+                                                <div className="settings-select-shell compact">
+                                                    <select
+                                                        value={task.recurring}
+                                                        onChange={e => handleTaskChange(idx, 'recurring', e.target.value)}
+                                                        className="settings-select-control"
+                                                    >
+                                                        <option value="once">Один раз</option>
+                                                        <option value="daily">Ежедневно</option>
+                                                        <option value="weekdays">По будням</option>
+                                                        <option value="weekends">По выходным</option>
+                                                        <option value="interval">С интервалом</option>
+                                                    </select>
+                                                </div>
 
                                                 {task.recurring !== 'interval' && (
                                                     <input
@@ -1317,18 +1345,18 @@ function SettingsModal({
                 </div>
 
                 {/* Footer */}
-                <div className="p-4 border-t border-white/10 bg-white/5 flex items-center justify-between no-drag-region">
+                <div className="settings-footer no-drag-region">
                     <div className="text-sm text-green-400 font-medium px-2">
                         {message}
                     </div>
                     <div className="flex gap-2">
-                        <button onClick={onClose} className="px-4 py-2 text-sm font-medium opacity-80 hover:bg-white/10 rounded-lg transition-all">
+                        <button onClick={onClose} className="settings-footer-button secondary">
                             Отмена
                         </button>
                         <button
                             onClick={handleSave}
                             disabled={loading || !config}
-                            className="px-5 py-2 text-sm font-medium bg-white text-black hover:bg-white/90 rounded-lg transition-all disabled:opacity-50"
+                            className="settings-footer-button primary"
                         >
                             {loading ? 'Сохранение...' : 'Сохранить'}
                         </button>
@@ -2338,6 +2366,7 @@ function ChatView({
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isConnected, setIsConnected] = useState(false);
     const [isAgentReady, setIsAgentReady] = useState(false);
+    const [isBackendStarting, setIsBackendStarting] = useState(true);
     const [isMaximized, setIsMaximized] = useState(false);
     const [logsOpen, setLogsOpen] = useState(false);
     const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -2363,11 +2392,6 @@ function ChatView({
         const saved = localStorage.getItem('vera_thinking_enabled');
         return saved === null ? true : saved === 'true';
     });
-    const [reasoningBudget, setReasoningBudget] = useState(() => {
-        const parsed = Number.parseInt(localStorage.getItem('vera_reasoning_budget') || '1024', 10);
-        return Number.isFinite(parsed) ? parsed : 1024;
-    });
-
     const wsRef = useRef<WebSocket | null>(null);
     const activeSessionIdRef = useRef<string | null>(null);
     const sessionsInitializedRef = useRef(false);
@@ -2382,7 +2406,6 @@ function ChatView({
     const [isMuted, setIsMuted] = useState(false);
     const [renderWindow, setRenderWindow] = useState(120);
     const thinkingEnabledRef = useRef(thinkingEnabled);
-    const reasoningBudgetRef = useRef(reasoningBudget);
     const pendingChunksRef = useRef<any[]>([]);
     const chunkFlushRafRef = useRef<number | null>(null);
     const ignoreLateChunksRef = useRef(false);
@@ -2746,10 +2769,10 @@ function ChatView({
                 const streamIdx = findLastStreamingAssistantIndex(next);
                 if (streamIdx !== -1) {
                     const updated = { ...next[streamIdx] };
-                    if (chunk.type === 'chat_chunk') {
-                        updated.text += String(chunk.text || '');
-                    } else {
+                    if (chunk.type === 'thought_chunk') {
                         updated.thoughts = (updated.thoughts || '') + String(chunk.text || '');
+                    } else {
+                        updated.text += String(chunk.text || '');
                     }
                     next = [...next.slice(0, streamIdx), updated, ...next.slice(streamIdx + 1)];
                 } else {
@@ -2757,7 +2780,7 @@ function ChatView({
                         ...next,
                         {
                             role: 'assistant',
-                            text: chunk.type === 'chat_chunk' ? String(chunk.text || '') : '',
+                            text: chunk.type === 'thought_chunk' ? '' : String(chunk.text || ''),
                             thoughts: chunk.type === 'thought_chunk' ? String(chunk.text || '') : '',
                             streaming: true,
                         },
@@ -2786,13 +2809,13 @@ function ChatView({
                 onOpen: (ws) => {
                     wsRef.current = ws;
                     setIsConnected(prev => (prev ? prev : true));
+                    setIsBackendStarting(true);
                     agentReadyRef.current = false;
                     setIsAgentReady(false);
                     appendLog('Соединение с Vera установлено', 'success');
                     ws.send(JSON.stringify({
                         type: 'set_thinking_mode',
                         enabled: thinkingEnabledRef.current,
-                        reasoning_budget: reasoningBudgetRef.current,
                     }));
                     ws.send(JSON.stringify({ type: 'get_thinking_mode' }));
                     ws.send(JSON.stringify({ type: 'get_runtime_info' }));
@@ -2800,12 +2823,14 @@ function ChatView({
                 },
                 onError: () => {
                     setIsConnected(prev => (prev ? false : prev));
+                    setIsBackendStarting(true);
                     agentReadyRef.current = false;
                     setIsAgentReady(false);
                     appendLog('Ошибка соединения с сервером', 'error');
                 },
                 onClose: () => {
                     setIsConnected(prev => (prev ? false : prev));
+                    setIsBackendStarting(true);
                     agentReadyRef.current = false;
                     setIsAgentReady(false);
                     appendLog('Соединение потеряно. Переподключаюсь...', 'error');
@@ -2840,6 +2865,7 @@ function ChatView({
                             const becameReady = ready && !agentReadyRef.current;
                             agentReadyRef.current = ready;
                             setIsAgentReady(ready);
+                            setIsBackendStarting(!ready);
                             if (becameReady) {
                                 appendLog('Vera полностью запущена и готова', 'success');
                             }
@@ -2848,9 +2874,6 @@ function ChatView({
                         if (data.type === 'thinking_mode') {
                             if (typeof data.enabled === 'boolean') {
                                 setThinkingEnabled(prev => (prev === data.enabled ? prev : data.enabled));
-                            }
-                            if (typeof data.reasoning_budget === 'number') {
-                                setReasoningBudget(prev => (prev === data.reasoning_budget ? prev : data.reasoning_budget));
                             }
                             return;
                         }
@@ -2959,6 +2982,9 @@ function ChatView({
             }
 
             if (payload.type === 'restarting') {
+                setIsBackendStarting(true);
+                agentReadyRef.current = false;
+                setIsAgentReady(false);
                 const delayMs = Number(payload.delayMs) || 1000;
                 const seconds = Math.max(1, Math.round(delayMs / 1000));
                 const attempt = Number(payload.attempt) || 1;
@@ -2971,6 +2997,9 @@ function ChatView({
             }
 
             if (payload.type === 'restart_failed') {
+                setIsBackendStarting(true);
+                agentReadyRef.current = false;
+                setIsAgentReady(false);
                 const maxAttempts = Number(payload.maxAttempts) || 5;
                 setMessages(prev => [...prev, {
                     role: 'system',
@@ -2984,6 +3013,13 @@ function ChatView({
                     role: 'system',
                     text: 'Обнаружены неполадки сети. Некоторые функции могут временно не работать.',
                 }]);
+                return;
+            }
+
+            if (payload.type === 'starting') {
+                setIsBackendStarting(true);
+                agentReadyRef.current = false;
+                setIsAgentReady(false);
             }
         };
 
@@ -3001,11 +3037,6 @@ function ChatView({
         localStorage.setItem('vera_thinking_enabled', thinkingEnabled.toString());
         thinkingEnabledRef.current = thinkingEnabled;
     }, [thinkingEnabled]);
-
-    useEffect(() => {
-        localStorage.setItem('vera_reasoning_budget', reasoningBudget.toString());
-        reasoningBudgetRef.current = reasoningBudget;
-    }, [reasoningBudget]);
 
     useEffect(() => {
         setRenderWindow(120);
@@ -3132,9 +3163,8 @@ function ChatView({
         wsRef.current.send(JSON.stringify({
             type: 'set_thinking_mode',
             enabled: next,
-            reasoning_budget: reasoningBudget
         }));
-    }, [thinkingEnabled, reasoningBudget]);
+    }, [thinkingEnabled]);
 
     return (
         <div
@@ -3227,8 +3257,9 @@ function ChatView({
                 </div>
             </div>
             <AnimatePresence>
-                {!isAgentReady && (
+                {(!isAgentReady || isBackendStarting) && (
                     <motion.div
+                        key="agent-connection"
                         className="agent-connection-overlay no-drag-region"
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}

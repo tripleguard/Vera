@@ -544,8 +544,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
                 elif payload.get("type") == "set_thinking_mode":
                     from main.agent import set_thinking_mode
                     enabled = bool(payload.get("enabled", True))
-                    reasoning_budget = payload.get("reasoning_budget")
-                    set_thinking_mode(enabled=enabled, reasoning_budget=reasoning_budget)
+                    set_thinking_mode(enabled=enabled)
                 elif payload.get("type") == "get_thinking_mode":
                     from main.agent import get_thinking_mode
                     state = get_thinking_mode()

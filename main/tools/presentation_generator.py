@@ -271,7 +271,7 @@ def _refine_plan(
             top_p=0.8,
             stop=["```"],
             chat_template_kwargs={"enable_thinking": False},
-            reasoning_budget=0,
+            thinking_budget_tokens=0,
         )
         parsed = _extract_json(result["choices"][0]["message"]["content"])
         refined = []
@@ -368,7 +368,7 @@ summary — финальные выводы.
             top_p=0.85,
             stop=["```"],
             chat_template_kwargs={"enable_thinking": False},
-            reasoning_budget=0,
+            thinking_budget_tokens=0,
         )
         parsed = _extract_json(result["choices"][0]["message"]["content"])
         slides: List[Dict[str, Any]] = []

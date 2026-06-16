@@ -26,8 +26,7 @@ DEFAULT_CONFIG = {
         "seed": 42,
         "chat_format": "chatml",
         "thinking_enabled": True,
-        "reasoning_budget": 1024,
-        "max_thought_chars": 4000,
+        "thinking_budget_tokens": 1024,
         "vision_projector_path": "auto",
         "use_external_server": False,
         "external_api_url": "http://127.0.0.1:1234/v1",
@@ -374,7 +373,9 @@ class ConfigManager:
 
         with self._config_path.open(encoding="utf-8-sig") as f:
             self._raw_config = json.load(f)
-            migrated = self._normalize_tts_config(self._raw_config)
+            tts_migrated = self._normalize_tts_config(self._raw_config)
+            model_migrated = self._normalize_model_config(self._raw_config)
+            migrated = tts_migrated or model_migrated
             self._config = copy.deepcopy(self._raw_config)
             logger.info("Configuration loaded from %s", self._config_path)
         if migrated:
@@ -400,6 +401,26 @@ class ConfigManager:
         changed = raw_volume != volume or scale != "percent_v2"
         tts["volume"] = volume
         tts["volume_scale"] = "percent_v2"
+        return changed
+
+    @staticmethod
+    def _normalize_model_config(config: dict) -> bool:
+        model = config.setdefault("model", {})
+        raw_budget = model.get(
+            "thinking_budget_tokens",
+            DEFAULT_CONFIG["model"]["thinking_budget_tokens"],
+        )
+        try:
+            budget = int(raw_budget)
+        except (TypeError, ValueError):
+            budget = int(DEFAULT_CONFIG["model"]["thinking_budget_tokens"])
+
+        budget = max(0, min(32768, budget))
+        changed = (
+            raw_budget != budget
+            or model.get("thinking_budget_tokens") != budget
+        )
+        model["thinking_budget_tokens"] = budget
         return changed
 
     def reload(self) -> None:
@@ -428,8 +449,10 @@ class ConfigManager:
     def set_all(self, new_config: dict) -> None:
         self._raw_config = copy.deepcopy(new_config)
         self._normalize_tts_config(self._raw_config)
+        self._normalize_model_config(self._raw_config)
         self._config = copy.deepcopy(new_config)
         self._normalize_tts_config(self._config)
+        self._normalize_model_config(self._config)
 
     def set(self, *keys: str, value: Any) -> None:
         if self._config is None:

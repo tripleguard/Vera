@@ -63,7 +63,7 @@ class TextDocumentGeneratorTests(unittest.TestCase):
         self.assertEqual(file_path, str(target))
         self.assertIn("Документ сохранён:", message)
         self.assertIn("интернет-источников: 1", message)
-        self.assertEqual(calls[0][1]["reasoning_budget"], 0)
+        self.assertEqual(calls[0][1]["thinking_budget_tokens"], 0)
 
 
 if __name__ == "__main__":

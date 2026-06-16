@@ -153,6 +153,8 @@ class LlamaServer:
             "--jinja",
             "--fit", "on",
             "--cache-reuse", "256",
+            "--reasoning-budget-message",
+            "Бюджет размышления исчерпан. Перехожу к финальному ответу.",
         ]
         if self.mmproj_path:
             cmd.extend(["--mmproj", str(self.mmproj_path)])
@@ -456,7 +458,7 @@ class LlamaClient:
         "repeat_penalty", "presence_penalty", "frequency_penalty",
         "max_tokens", "stop", "seed", "stream",
         "tools", "tool_choice",
-        "chat_template_kwargs", "reasoning_budget", "reasoning_format",
+        "chat_template_kwargs", "thinking_budget_tokens",
     }
 
     def __init__(self, host: str = "127.0.0.1", port: int = 29741, base_url: Optional[str] = None):

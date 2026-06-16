@@ -1,8 +1,27 @@
 import re
-from typing import Optional
+from typing import Callable, Optional
 
-from web.http_client import http as requests
 from web.web_utils import get_default_headers, fetch_url, search_brave
+
+
+_default_city_provider: Optional[Callable[[], Optional[str]]] = None
+
+
+def set_default_city_provider(provider: Optional[Callable[[], Optional[str]]]) -> None:
+    """Подключает источник города по умолчанию без зависимости web-модуля от памяти."""
+    global _default_city_provider
+    _default_city_provider = provider
+
+
+def _get_default_city() -> Optional[str]:
+    if _default_city_provider is None:
+        return None
+    try:
+        city = str(_default_city_provider() or "").strip()
+        return city or None
+    except Exception as exc:
+        print(f"[WEATHER] Default city error: {exc}")
+        return None
 
 
 def _extract_city_from_text(t: str) -> Optional[str]:
@@ -93,6 +112,12 @@ def _get_weather_advice(temp: Optional[int], feels: Optional[int], condition: Op
                 "Возьмите кофту или ветровку.",
                 "Прохладно, возьмите что-то тёплое."
             ])
+        elif t <= 25:
+            temp_advice = random.choice([
+                "На улице комфортно, подойдёт лёгкая одежда.",
+                "Погода комфортная для прогулки.",
+                "Можно обойтись без тёплой куртки."
+            ])
         elif t > 25:
             temp_advice = random.choice([
                 "На улице жарко, одевайтесь легче.",
@@ -124,7 +149,7 @@ def _get_weather_advice(temp: Optional[int], feels: Optional[int], condition: Op
     
     # Объединяем советы
     advice_parts = [a for a in [temp_advice, rain_advice] if a]
-    return " " + advice_parts[0] if advice_parts else ""
+    return " " + " ".join(advice_parts) if advice_parts else ""
 
 
 def execute_weather_command(text: str) -> Optional[str]:
@@ -140,7 +165,12 @@ def execute_weather_command(text: str) -> Optional[str]:
         
         city_hint = _extract_city_from_text(lowered)
         if not city_hint:
-            return "Уточните город: например, 'погода в Москве'."
+            city_hint = _get_default_city()
+        if not city_hint:
+            return (
+                "Уточните город: например, «погода в Москве», "
+                "или сохраните его командой «запомни мой город Москва»."
+            )
         
         # Ищем через fallback search
         search_query = f"погода {city_hint}"

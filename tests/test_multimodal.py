@@ -61,6 +61,17 @@ class MultimodalTests(unittest.TestCase):
         self.assertEqual(result["choices"][0]["message"]["content"], "ok")
         self.assertEqual(post.call_args.kwargs["json"]["messages"], messages)
 
+    def test_client_sends_llama_cpp_thinking_budget(self):
+        client = LlamaClient(port=9999)
+        with patch.object(client._session, "post", return_value=_Response()) as post:
+            client.create_chat_completion(
+                messages=[{"role": "user", "content": "Привет"}],
+                thinking_budget_tokens=768,
+            )
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["thinking_budget_tokens"], 768)
+
     def test_stream_parser_uses_low_latency_chunks_and_closes_response(self):
         class _StreamResponse(_Response):
             def __init__(self):
@@ -107,6 +118,8 @@ class MultimodalTests(unittest.TestCase):
             command = popen.call_args.args[0]
             reuse_index = command.index("--cache-reuse")
             self.assertEqual(command[reuse_index + 1], "256")
+            message_index = command.index("--reasoning-budget-message")
+            self.assertIn("финальному ответу", command[message_index + 1])
 
     def test_incompatible_mmproj_is_not_attached(self):
         with tempfile.TemporaryDirectory() as tmp:

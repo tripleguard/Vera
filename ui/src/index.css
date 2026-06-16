@@ -772,31 +772,46 @@ body {
 }
 
 .vera-settings {
-    background: var(--vera-panel-strong);
-    border-color: var(--vera-border);
-    box-shadow: var(--vera-shadow);
+    background:
+        linear-gradient(145deg, color-mix(in srgb, var(--vera-panel-strong) 96%, var(--vera-accent) 4%), var(--vera-panel-strong));
+    border-color: color-mix(in srgb, var(--vera-border) 82%, var(--vera-accent) 18%);
+    border-radius: 24px !important;
+    box-shadow: 0 28px 90px rgba(0, 0, 0, 0.5);
 }
 
 .settings-header,
 .vera-settings > .border-t {
-    background: color-mix(in srgb, var(--vera-panel-muted) 70%, transparent);
+    background: color-mix(in srgb, var(--vera-panel-muted) 54%, transparent);
     border-color: var(--vera-border);
 }
 
+.settings-header {
+    min-height: 68px;
+    padding: 1rem 1.25rem !important;
+}
+
+.settings-header h2 {
+    font-size: 1rem;
+    font-weight: 720;
+    letter-spacing: -0.015em;
+}
+
 .settings-section-title {
-    margin-bottom: 1rem;
-    color: var(--vera-muted);
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0;
+    margin-bottom: 1.15rem;
+    color: var(--vera-text);
+    font-size: 0.88rem;
+    font-weight: 720;
+    text-transform: none;
+    letter-spacing: -0.01em;
 }
 
 .vera-settings section {
     border: 1px solid var(--vera-border);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--vera-panel-muted) 52%, transparent);
-    padding: 1rem;
+    border-radius: 16px;
+    background:
+        linear-gradient(145deg, color-mix(in srgb, var(--vera-panel-muted) 72%, transparent), color-mix(in srgb, var(--vera-bg) 30%, transparent));
+    padding: 1.15rem;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vera-text) 4%, transparent);
 }
 
 .settings-intro {
@@ -807,9 +822,9 @@ body {
 
 .settings-intro-card {
     border: 1px solid var(--vera-border);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--vera-bg) 42%, transparent);
-    padding: 0.9rem 1rem;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--vera-bg) 48%, transparent);
+    padding: 0.95rem 1.05rem;
 }
 
 .settings-intro-card strong {
@@ -822,7 +837,7 @@ body {
 .settings-intro-label {
     color: var(--vera-muted);
     font-size: 0.68rem;
-    text-transform: uppercase;
+    font-weight: 650;
 }
 
 .settings-separator {
@@ -836,7 +851,7 @@ body {
     align-items: center;
     gap: 0.35rem;
     border: 1px solid var(--vera-border);
-    border-radius: 8px;
+    border-radius: 10px;
     background: color-mix(in srgb, var(--vera-accent) 10%, transparent);
     color: var(--vera-accent);
     padding: 0.38rem 0.65rem;
@@ -856,11 +871,11 @@ body {
 }
 
 .settings-nav {
-    width: 208px;
-    flex: 0 0 208px;
+    width: 220px;
+    flex: 0 0 220px;
     border-right: 1px solid var(--vera-border);
-    background: color-mix(in srgb, var(--vera-panel-muted) 76%, var(--vera-bg));
-    padding: 0.9rem 0.65rem;
+    background: color-mix(in srgb, var(--vera-bg) 66%, var(--vera-panel-muted));
+    padding: 1rem 0.75rem;
 }
 
 .settings-nav-label {
@@ -877,28 +892,84 @@ body {
     width: 100%;
     align-items: center;
     gap: 0.65rem;
-    border-radius: 8px;
-    padding: 0.58rem 0.65rem;
+    border: 1px solid transparent;
+    border-radius: 11px;
+    padding: 0.68rem 0.75rem;
     color: var(--vera-muted);
     font-size: 0.82rem;
     font-weight: 650;
     text-align: left;
-    transition: background 120ms ease, color 120ms ease;
+    transition: background 150ms ease, color 150ms ease, border-color 150ms ease, transform 150ms ease;
 }
 
 .settings-nav-item:hover {
     background: color-mix(in srgb, var(--vera-text) 6%, transparent);
     color: var(--vera-text);
+    transform: translateX(2px);
 }
 
 .settings-nav-item.active {
-    background: color-mix(in srgb, var(--vera-accent) 13%, var(--vera-panel-strong));
+    border-color: color-mix(in srgb, var(--vera-accent) 22%, transparent);
+    background: color-mix(in srgb, var(--vera-accent) 12%, var(--vera-panel-strong));
     color: var(--vera-accent);
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--vera-accent) 72%, transparent);
 }
 
 .settings-content {
     min-width: 0;
     scroll-behavior: smooth;
+    padding: 1.5rem !important;
+}
+
+.settings-footer {
+    display: flex;
+    min-height: 68px;
+    align-items: center;
+    justify-content: space-between;
+    border-top: 1px solid var(--vera-border);
+    background: color-mix(in srgb, var(--vera-panel-muted) 58%, transparent);
+    padding: 0.85rem 1rem;
+}
+
+.settings-footer-button {
+    min-height: 40px;
+    border: 1px solid transparent;
+    border-radius: 11px;
+    padding: 0.55rem 1rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    transition: border-color 150ms ease, background 150ms ease, color 150ms ease, transform 150ms ease;
+}
+
+.settings-footer-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+}
+
+.settings-footer-button.secondary {
+    border-color: var(--vera-border);
+    background: color-mix(in srgb, var(--vera-text) 3%, transparent);
+    color: var(--vera-muted);
+}
+
+.settings-footer-button.secondary:hover {
+    border-color: var(--vera-border-strong);
+    color: var(--vera-text);
+}
+
+.settings-footer-button.primary {
+    border-color: color-mix(in srgb, var(--vera-accent) 72%, transparent);
+    background: var(--vera-accent);
+    color: var(--vera-bg);
+    box-shadow: 0 7px 20px color-mix(in srgb, var(--vera-accent) 18%, transparent);
+}
+
+.settings-footer-button.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--vera-accent) 88%, white);
+}
+
+.settings-footer-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
 }
 
 .settings-anchor {
@@ -1031,28 +1102,43 @@ body {
 .theme-option {
     min-height: 96px;
     border: 1px solid var(--vera-border);
-    border-radius: 8px;
+    border-radius: 14px;
     background: color-mix(in srgb, var(--vera-panel-muted) 72%, transparent);
-    padding: 0.75rem;
+    padding: 0.85rem;
     text-align: left;
-    transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+    transition: border-color 150ms ease, background 150ms ease, transform 150ms ease, box-shadow 150ms ease;
 }
 
-.theme-option:hover,
-.theme-option.active {
+.theme-option:hover {
     border-color: var(--vera-border-strong);
-    background: color-mix(in srgb, var(--vera-accent) 11%, var(--vera-panel-muted));
+    background: color-mix(in srgb, var(--vera-accent) 7%, var(--vera-panel-muted));
+    transform: translateY(-2px);
 }
 
 .theme-option.active {
+    border-color: color-mix(in srgb, var(--vera-accent) 62%, var(--vera-border));
+    background: color-mix(in srgb, var(--vera-accent) 11%, var(--vera-panel-muted));
     color: var(--vera-accent);
+    box-shadow: 0 8px 22px color-mix(in srgb, var(--vera-accent) 10%, transparent);
 }
 
-.vera-settings input,
+.theme-selected-label {
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--vera-accent) 14%, transparent);
+    padding: 0.18rem 0.48rem;
+    color: var(--vera-accent);
+    font-size: 0.61rem;
+    font-weight: 750;
+}
+
+.vera-settings input:not([type="range"]),
 .vera-settings select {
-    background: color-mix(in srgb, var(--vera-bg) 58%, transparent) !important;
+    min-height: 42px;
+    background: color-mix(in srgb, var(--vera-bg) 62%, transparent) !important;
     border-color: var(--vera-border) !important;
+    border-radius: 11px !important;
     color: var(--vera-text) !important;
+    transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
 }
 
 .vera-settings select,
@@ -1061,7 +1147,8 @@ body {
     -webkit-appearance: none;
     -moz-appearance: none;
     background-image: none !important;
-    padding-right: 0.75rem;
+    padding-right: 0.85rem;
+    cursor: pointer;
 }
 
 .vera-settings input[type="number"]::-webkit-outer-spin-button,
@@ -1077,11 +1164,180 @@ body {
 .vera-settings input:focus,
 .vera-settings select:focus {
     border-color: var(--vera-border-strong) !important;
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--vera-accent) 35%, transparent);
+    background: color-mix(in srgb, var(--vera-bg) 76%, transparent) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--vera-accent) 10%, transparent);
 }
 
 .vera-settings input[type="range"] {
+    min-height: 0;
     accent-color: var(--vera-accent);
+}
+
+.settings-site-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.56fr) minmax(260px, 1fr) 42px;
+    align-items: center;
+    gap: 0.65rem;
+}
+
+.settings-site-name,
+.settings-site-url {
+    width: 100%;
+    border-radius: 14px !important;
+    padding: 0.68rem 0.85rem !important;
+}
+
+.settings-site-remove {
+    display: inline-flex;
+    width: 42px;
+    height: 42px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    color: color-mix(in srgb, #ff626b 70%, var(--vera-muted));
+    transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.settings-site-remove:hover,
+.settings-site-remove:focus-visible {
+    border-color: color-mix(in srgb, #ff626b 20%, transparent);
+    background: color-mix(in srgb, #ff626b 16%, transparent);
+    color: #ff6b73;
+    outline: none;
+}
+
+.settings-select-shell {
+    min-width: 0;
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--vera-bg) 62%, transparent);
+}
+
+.settings-select-shell.compact {
+    min-width: 140px;
+}
+
+.settings-select-shell select {
+    width: 100%;
+    padding: 0.55rem 0.8rem;
+}
+
+.settings-toggle-row {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    border: 1px solid var(--vera-border);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--vera-bg) 40%, transparent);
+    padding: 0.85rem 0.95rem;
+    text-align: left;
+    transition: border-color 150ms ease, background 150ms ease;
+}
+
+.settings-toggle-row:hover {
+    border-color: var(--vera-border-strong);
+    background: color-mix(in srgb, var(--vera-text) 4%, transparent);
+}
+
+.settings-toggle-row.active {
+    border-color: color-mix(in srgb, var(--vera-accent) 36%, var(--vera-border));
+    background: color-mix(in srgb, var(--vera-accent) 8%, transparent);
+}
+
+.settings-toggle-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.16rem;
+}
+
+.settings-toggle-copy strong {
+    color: var(--vera-text);
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.settings-toggle-copy span {
+    color: var(--vera-muted);
+    font-size: 0.68rem;
+    line-height: 1.35;
+}
+
+.settings-switch {
+    position: relative;
+    display: inline-flex;
+    width: 42px;
+    height: 24px;
+    flex: 0 0 auto;
+    align-items: center;
+    border: 1px solid color-mix(in srgb, var(--vera-text) 15%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--vera-text) 9%, var(--vera-bg));
+    padding: 2px;
+    transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.settings-switch.active,
+.settings-toggle-row.active .settings-switch {
+    border-color: color-mix(in srgb, var(--vera-accent) 65%, transparent);
+    background: color-mix(in srgb, var(--vera-accent) 72%, var(--vera-bg));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--vera-accent) 9%, transparent);
+}
+
+.settings-switch.compact {
+    width: 38px;
+    height: 22px;
+}
+
+.settings-switch-thumb {
+    display: block;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--vera-text) 84%, var(--vera-panel-strong));
+    box-shadow: 0 2px 7px rgba(0, 0, 0, 0.3);
+    transform: translateX(0);
+    transition: transform 170ms cubic-bezier(0.22, 1, 0.36, 1), background 160ms ease;
+}
+
+.settings-switch.compact .settings-switch-thumb {
+    width: 16px;
+    height: 16px;
+}
+
+.settings-switch.active .settings-switch-thumb,
+.settings-toggle-row.active .settings-switch-thumb {
+    background: #fff;
+    transform: translateX(18px);
+}
+
+.settings-switch.compact.active .settings-switch-thumb {
+    transform: translateX(16px);
+}
+
+.settings-task-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    border: 1px solid var(--vera-border);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--vera-bg) 34%, transparent);
+    padding: 0.8rem;
+    transition: border-color 150ms ease, background 150ms ease;
+}
+
+.settings-task-card.active {
+    border-color: color-mix(in srgb, var(--vera-accent) 25%, var(--vera-border));
+    background: color-mix(in srgb, var(--vera-accent) 5%, var(--vera-bg));
+}
+
+.vera-settings input[type="time"]::-webkit-calendar-picker-indicator,
+.vera-settings input[type="date"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    filter: grayscale(1);
+    opacity: 0.48;
 }
 
 .memory-toolbar {
@@ -1156,7 +1412,8 @@ body {
 
 .memory-category-select {
     min-width: 0;
-    border-radius: 8px !important;
+    border-radius: 11px !important;
+    padding: 0.55rem 0.8rem;
 }
 
 .memory-facts-list {
@@ -1599,6 +1856,8 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
     justify-content: center;
     background: var(--vera-workspace-main-bg);
     color: var(--vera-workspace-title);
+    opacity: 1;
+    visibility: visible;
 }
 
 .agent-connection-label {
@@ -2258,33 +2517,66 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
     background: var(--vera-workspace-main-bg);
 }
 
-.thinking-line {
-    margin: 0 0 0.65rem;
-    color: var(--vera-workspace-subtle);
+.thinking-card {
+    margin: 0 0 0.75rem;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--vera-workspace-line) 78%, var(--vera-workspace-accent) 22%);
+    border-radius: 14px;
+    background:
+        linear-gradient(135deg, color-mix(in srgb, var(--vera-workspace-accent) 10%, transparent), transparent 46%),
+        color-mix(in srgb, var(--vera-workspace-card) 82%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vera-workspace-text) 5%, transparent);
 }
 
-.thinking-line-toggle {
-    display: inline-flex;
+.thinking-card.light {
+    background:
+        linear-gradient(135deg, color-mix(in srgb, var(--vera-workspace-accent) 9%, transparent), transparent 46%),
+        color-mix(in srgb, #ffffff 92%, transparent);
+}
+
+.thinking-card-toggle {
+    display: flex;
+    width: 100%;
     align-items: center;
-    gap: 0.3rem;
-    padding: 0;
+    gap: 0.55rem;
+    padding: 0.6rem 0.75rem;
+    color: var(--vera-workspace-subtle);
     font-size: 12px;
-    font-weight: 500;
-    opacity: 0.72;
-    transition: color 120ms ease, opacity 120ms ease;
+    text-align: left;
+    transition: color 140ms ease, background 140ms ease;
 }
 
-.thinking-line-toggle:hover {
+.thinking-card-toggle:hover {
+    background: color-mix(in srgb, var(--vera-workspace-accent) 8%, transparent);
+    color: var(--vera-workspace-text);
+}
+
+.thinking-card-icon {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--vera-workspace-accent) 16%, transparent);
     color: var(--vera-workspace-accent);
-    opacity: 1;
 }
 
-.thinking-line-content {
-    max-width: 720px;
-    margin-top: 0.45rem;
-    border-left: 1px solid var(--vera-workspace-line);
-    padding: 0.1rem 0 0.1rem 0.75rem;
-    color: color-mix(in srgb, var(--vera-workspace-text) 68%, transparent);
+.thinking-card-title {
+    color: var(--vera-workspace-text);
+    font-weight: 700;
+}
+
+.thinking-card-meta {
+    margin-left: auto;
+    font-size: 11px;
+    opacity: 0.7;
+}
+
+.thinking-card-content {
+    border-top: 1px solid color-mix(in srgb, var(--vera-workspace-line) 72%, transparent);
+    padding: 0.75rem 0.85rem 0.85rem;
+    color: color-mix(in srgb, var(--vera-workspace-text) 76%, transparent);
     font-size: 12px;
     font-style: italic;
     line-height: 1.55;

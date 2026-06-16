@@ -197,7 +197,7 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
 
     gen_args = {k: web_cfg[k] for k in ("temperature", "top_p") if k in web_cfg}
     gen_args["chat_template_kwargs"] = {"enable_thinking": False}
-    gen_args["reasoning_budget"] = 0
+    gen_args["thinking_budget_tokens"] = 0
     
     mt = int(web_cfg.get("llm_max_tokens", 128))
         

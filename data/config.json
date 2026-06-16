@@ -11,8 +11,7 @@
                   "max_tokens":  0,
                   "chat_format":  "chatml",
                   "thinking_enabled":  true,
-                  "reasoning_budget":  4096,
-                  "max_thought_chars":  10000,
+                  "thinking_budget_tokens":  768,
                   "use_external_server":  false,
                   "external_api_url":  "http://127.0.0.1:1234"
               },
