@@ -8,6 +8,10 @@
 #define MyAppPublisher "TripleGuard"
 #define MyAppURL "https://github.com/tripleguard/Vera"
 #define MyAppExeName "Vera.exe"
+#define MainInstallSizeText "~656 МБ"
+#define FullInstallSizeText "~1,90 ГиБ"
+#define LlamaDownloadSize 78643200
+#define ModelDownloadSize 1270808032
 
 ; Путь к staging-каталогу, собранному build.bat
 #define StagingDir "build\staging"
@@ -31,8 +35,8 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
-ArchitecturesInstallIn64BitMode=x64
-ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed=x64compatible
 UninstallDisplayIcon={app}\vera.ico
 UninstallDisplayName={#MyAppName}
 MinVersion=10.0
@@ -46,14 +50,14 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 ;  Компоненты установки
 ; ============================================================
 [Types]
-Name: "full"; Description: "Полная установка (с LLM и моделью)"
-Name: "compact"; Description: "Минимальная установка (внешний LLM)"
+Name: "full"; Description: "Полная установка (с LLM и моделью, {#FullInstallSizeText})"
+Name: "compact"; Description: "Минимальная установка (внешний LLM, {#MainInstallSizeText})"
 Name: "custom"; Description: "Выборочная установка"; Flags: iscustom
 
 [Components]
-Name: "main"; Description: "Vera — основное приложение"; Types: full compact custom; Flags: fixed
-Name: "llama"; Description: "llama.cpp — локальный LLM-сервер (~75 МБ, из интернета)"; Types: full; ExtraDiskSpaceRequired: 78643200
-Name: "model"; Description: "Qwen3.5-2B — языковая модель (Q4_K_M, ~1.2 ГБ, из интернета)"; Types: full; ExtraDiskSpaceRequired: 1288490189
+Name: "main"; Description: "Vera — основное приложение ({#MainInstallSizeText})"; Types: full compact custom; Flags: fixed
+Name: "llama"; Description: "llama.cpp — локальный LLM-сервер (~75 МБ, из интернета)"; Types: full; ExtraDiskSpaceRequired: {#LlamaDownloadSize}
+Name: "model"; Description: "Qwen3.5-2B — языковая модель (Q4_K_M, ~1,18 ГиБ, из интернета)"; Types: full; ExtraDiskSpaceRequired: {#ModelDownloadSize}
 
 ; ============================================================
 ;  Файлы приложения
@@ -129,15 +133,13 @@ end;
 
 
 function NextButtonClick(CurPageID: Integer): Boolean;
-var
-  ResultCode: Integer;
 begin
   Result := True;
 
   if CurPageID = wpReady then
   begin
     { ── Скачивание модели GGUF ── }
-    if IsComponentSelected('model') then
+    if WizardIsComponentSelected('model') then
     begin
       DownloadPage.Clear;
       DownloadPage.Add(
@@ -152,7 +154,7 @@ begin
         except
           if MsgBox(
             'Не удалось скачать модель автоматически.' + #13#10 +
-            'Размер файла: ~1.2 ГБ. Проверьте подключение к интернету.' + #13#10 + #13#10 +
+            'Размер файла: ~1,18 ГиБ. Проверьте подключение к интернету.' + #13#10 + #13#10 +
             'Продолжить установку без модели?' + #13#10 +
             'Вы можете скачать её позже вручную с:' + #13#10 +
             'https://huggingface.co/bartowski/Qwen_Qwen3.5-2B-GGUF',
@@ -179,19 +181,19 @@ begin
   if CurStep = ssPostInstall then
   begin
     { ── Копируем скачанную модель в папку приложения ── }
-    if IsComponentSelected('model') then
+    if WizardIsComponentSelected('model') then
     begin
       ModelSrc := ExpandConstant('{tmp}\Qwen3.5-2B-Q4_K_M.gguf');
       ModelDst := ExpandConstant('{app}\Qwen3.5-2B-Q4_K_M.gguf');
       if FileExists(ModelSrc) then
       begin
         Log('Копирование модели в ' + ModelDst);
-        FileCopy(ModelSrc, ModelDst, False);
+        CopyFile(ModelSrc, ModelDst, False);
       end;
     end;
 
     { ── Скачивание llama-server.exe через PowerShell ── }
-    if IsComponentSelected('llama') then
+    if WizardIsComponentSelected('llama') then
     begin
       Log('Запуск скачивания llama-server.exe...');
       { Скачиваем используя PowerShell + Invoke-RestMethod }

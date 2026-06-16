@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Archive, Bot, Boxes, FileStack, MessageSquare, MoreHorizontal, Pin, Search, Trash2 } from 'lucide-react';
+import { Archive, Bot, Boxes, FileStack, MoreHorizontal, Pin, Search, Trash2 } from 'lucide-react';
 import type { SessionRecord } from '../services/sessionService';
 
 interface SessionSidebarProps {
@@ -123,7 +123,6 @@ export function SessionSidebar({
       >
         <Boxes size={17} /> Skills
       </button>
-      <button className="session-nav-item" type="button"><MessageSquare size={17} /> Messaging</button>
       <button
         className={`session-nav-item ${activeSection === 'projects' ? 'active' : ''}`}
         type="button"

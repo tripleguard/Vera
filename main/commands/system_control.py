@@ -1,9 +1,130 @@
 import re
 import subprocess
+from ipaddress import ip_address
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
+
+from main.config_manager import get_config
 from main.lang_ru import replace_number_words
+
+
+_PING_ALIASES = {
+    "яндекс": "ya.ru",
+    "гугл": "google.com",
+    "google": "google.com",
+    "клаудфлер": "1.1.1.1",
+    "cloudflare": "1.1.1.1",
+}
+
+
+def _configured_site_hosts() -> dict[str, str]:
+    try:
+        sites = get_config().get("sites", default={})
+    except Exception:
+        sites = {}
+
+    hosts: dict[str, str] = {}
+    for alias, value in (sites or {}).items():
+        raw = str(value or "").strip()
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        if parsed.hostname:
+            hosts[str(alias).lower().strip()] = parsed.hostname
+    return hosts
+
+
+def _is_valid_ping_target(value: str) -> bool:
+    try:
+        ip_address(value)
+        return True
+    except ValueError:
+        pass
+    if len(value) > 253:
+        return False
+    labels = value.rstrip(".").split(".")
+    return bool(
+        len(labels) >= 2
+        and all(
+            label
+            and len(label) <= 63
+            and not label.startswith("-")
+            and not label.endswith("-")
+            and re.fullmatch(r"[a-z0-9-]+", label)
+            for label in labels
+        )
+    )
+
+
+def _extract_ping_target(text: str) -> tuple[Optional[str], Optional[str], bool]:
+    lowered = (text or "").lower().strip()
+    match = re.search(r"\b(пинг|пингани|пингуй)\b(?:\s+(?:сайт|адрес|хост)?\s*(.+))?$", lowered)
+    if not match:
+        return None, None, False
+
+    continuous = match.group(1) == "пингуй"
+    requested = re.sub(r"[?!.;,]+$", "", (match.group(2) or "").strip())
+    if not requested:
+        return None, None, continuous
+
+    aliases = {**_PING_ALIASES, **_configured_site_hosts()}
+    target = aliases.get(requested, requested)
+    parsed = urlparse(target if "://" in target else f"//{target}")
+    host = parsed.hostname or target
+    try:
+        host = host.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return requested, None, continuous
+    return requested, host if _is_valid_ping_target(host) else None, continuous
+
+
+def execute_ping_command(text: str) -> Optional[str]:
+    """Выполняет обычный или непрерывный ping без shell-интерпретации."""
+    requested, target, continuous = _extract_ping_target(text)
+    if requested is None and target is None:
+        if re.search(r"\b(пинг|пингани|пингуй)\b", (text or "").lower()):
+            return "Уточните адрес: например, «пингани Яндекс»."
+        return None
+    if target is None:
+        return "Не удалось распознать адрес для пинга."
+
+    try:
+        if continuous:
+            creationflags = (
+                getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+            subprocess.Popen(
+                ["ping", "-t", target],
+                creationflags=creationflags,
+            )
+            return f"Запускаю непрерывный пинг {target}. Для остановки нажмите Ctrl+C в окне пинга."
+
+        result = subprocess.run(
+            ["ping", "-n", "4", target],
+            capture_output=True,
+            text=True,
+            encoding="cp866",
+            errors="replace",
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+        output = f"{result.stdout}\n{result.stderr}"
+        latency = re.search(
+            r"(?:Среднее|Average)\s*=\s*(\d+)\s*(?:мсек|ms)",
+            output,
+            flags=re.IGNORECASE,
+        )
+        if result.returncode == 0:
+            suffix = f", средняя задержка {latency.group(1)} мс" if latency else ""
+            return f"{target} отвечает{suffix}."
+        return f"{target} не отвечает."
+    except subprocess.TimeoutExpired:
+        return f"Пинг {target} превысил время ожидания."
+    except Exception as exc:
+        print(f"[PING] Ошибка: {exc}")
+        return f"Не удалось выполнить пинг {target}."
 
 
 def execute_taskmanager_command(text: str) -> Optional[str]:

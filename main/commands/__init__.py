@@ -12,6 +12,7 @@ from .system_control import (
     execute_brightness_command,
     execute_screenshot_command,
     execute_ip_command,
+    execute_ping_command,
     execute_start_menu_command,
     execute_explorer_command,
 )
@@ -116,6 +117,7 @@ HANDLERS = (
     execute_brightness_command,
     execute_screenshot_command,
     execute_ip_command,
+    execute_ping_command,
     
     # Время
     execute_time_command,
