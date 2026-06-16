@@ -31,6 +31,10 @@ from user.json_storage import load_json, save_json
 MAX_PROFILE_FIELDS = 10
 MAX_FACTS = 20
 MAX_CONTEXT_LENGTH = 600       # подняли с 500 для запаса на pinned
+LOCATION_CONTEXT_RE = re.compile(
+    r"(погод|город|адрес|локац|местополож|где\s+я|рядом|поблизости|маршрут|живу|нахожусь)",
+    re.IGNORECASE,
+)
 # Гибридные веса (по плану)
 _W_KEYWORD = 0.50
 _W_RECENCY = 0.30
@@ -57,6 +61,10 @@ _CATEGORY_BOOST = {
     "project": 1.2,
     "fact": 1.0,
 }
+
+
+def is_location_sensitive_query(text: str) -> bool:
+    return bool(LOCATION_CONTEXT_RE.search(str(text or "").lower()))
 
 # Триггеры → категория (используется и при auto-categorize, и при query boost).
 # ВАЖНО: 1-е и 3-е лицо + вариации («зовут», «зовут...»). Без LLM — лучшее что можно.
@@ -380,7 +388,10 @@ class MemoryManager:
             parts.append(line)
             current_length += len(line)
 
-        priority_keys = ["город", "работа", "возраст"]
+        wants_location_context = is_location_sensitive_query(str(query_text or ""))
+        priority_keys = ["работа", "возраст"]
+        if wants_location_context:
+            priority_keys.insert(0, "город")
         for key in priority_keys:
             if current_length >= MAX_CONTEXT_LENGTH:
                 break

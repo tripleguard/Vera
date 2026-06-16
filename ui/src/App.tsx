@@ -369,9 +369,6 @@ function ThinkingBlock({ thoughts, isLightMode }: { thoughts: string; isLightMod
                     <Brain size={13} />
                 </span>
                 <span className="thinking-card-title">Ход мысли</span>
-                <span className="thinking-card-meta">
-                    {isExpanded ? 'Скрыть' : 'Показать'}
-                </span>
                 {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </button>
             {isExpanded && (
@@ -2639,6 +2636,27 @@ function ChatView({
         return created;
     }, []);
 
+    const reconcileActiveSession = useCallback(async () => {
+        const items = await refreshSessions();
+        const currentId = activeSessionIdRef.current;
+        if (currentId && items.some(item => item.id === currentId)) {
+            return;
+        }
+
+        ignoreLateChunksRef.current = true;
+        pendingChunksRef.current = [];
+        if (chunkFlushRafRef.current != null) {
+            window.cancelAnimationFrame(chunkFlushRafRef.current);
+            chunkFlushRafRef.current = null;
+        }
+
+        if (items[0]) {
+            await selectSession(items[0].id);
+        } else {
+            await startNewSession();
+        }
+    }, [refreshSessions, selectSession, startNewSession]);
+
     useEffect(() => {
         const onPaste = (event: ClipboardEvent) => {
             const clipboard = event.clipboardData;
@@ -2706,10 +2724,14 @@ function ChatView({
                     selectSession(nextId).catch(error => {
                         pushSystemMessage(`Ошибка переключения сессии: ${error.message}`);
                     });
+                } else if (!nextId && activeSessionIdRef.current) {
+                    reconcileActiveSession().catch(error => {
+                        pushSystemMessage(`Ошибка обновления сессии: ${error.message}`);
+                    });
                 }
             }
             if (event.key === SESSIONS_REV_STORAGE_KEY) {
-                refreshSessions().catch(() => undefined);
+                reconcileActiveSession().catch(() => undefined);
             }
         };
         const onActiveSession = (event: Event) => {
@@ -2718,10 +2740,14 @@ function ChatView({
                 selectSession(nextId).catch(error => {
                     pushSystemMessage(`Ошибка переключения сессии: ${error.message}`);
                 });
+            } else if (!nextId && activeSessionIdRef.current) {
+                reconcileActiveSession().catch(error => {
+                    pushSystemMessage(`Ошибка обновления сессии: ${error.message}`);
+                });
             }
         };
         const onSessionsRevision = () => {
-            refreshSessions().catch(() => undefined);
+            reconcileActiveSession().catch(() => undefined);
         };
 
         window.addEventListener('storage', onStorage);
@@ -2732,7 +2758,7 @@ function ChatView({
             window.removeEventListener(ACTIVE_SESSION_EVENT, onActiveSession);
             window.removeEventListener(SESSIONS_REV_EVENT, onSessionsRevision);
         };
-    }, [pushSystemMessage, refreshSessions, selectSession]);
+    }, [pushSystemMessage, reconcileActiveSession, selectSession]);
 
     const findLastStreamingAssistantIndex = useCallback((arr: Message[]): number => {
         for (let i = arr.length - 1; i >= 0; i--) {
@@ -3056,6 +3082,7 @@ function ChatView({
         e.preventDefault();
         if (!isAgentReady || (!input.trim() && !attachedFile) || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
         setActivityLabel(null);
+        await reconcileActiveSession();
         let targetSessionId = activeSessionIdRef.current;
         if (!targetSessionId) {
             const created = await startNewSession();
@@ -3129,7 +3156,7 @@ function ChatView({
         wsRef.current.send(JSON.stringify(payload));
         appendLog('Запрос отправлен', 'info', fullText || selectedFile?.name);
         setInput('');
-    }, [appendLog, input, attachedFile, isAgentReady, startNewSession]);
+    }, [appendLog, input, attachedFile, isAgentReady, reconcileActiveSession, startNewSession]);
 
     const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];

@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import user.memory as memory_module
-from user.memory import MemoryManager, MAX_FACTS
+from user.memory import MemoryManager, MAX_FACTS, is_location_sensitive_query
 
 
 class MemoryManagerTests(unittest.TestCase):
@@ -86,7 +86,7 @@ class MemoryManagerTests(unittest.TestCase):
     def test_json_is_the_only_storage_and_drops_legacy_dialog_fields(self):
         self.memory_path.write_text(
             json.dumps({
-                "profile": {"имя": "Тимур"},
+                "profile": {"имя": "Тестовый пользователь"},
                 "facts": [],
                 "last_session_summary": "legacy",
                 "last_dialog_messages": [{"role": "user", "content": "legacy"}],
@@ -98,8 +98,28 @@ class MemoryManagerTests(unittest.TestCase):
         manager.save()
         stored = json.loads(self.memory_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(stored, {"profile": {"имя": "Тимур"}, "facts": []})
+        self.assertEqual(stored, {"profile": {"имя": "Тестовый пользователь"}, "facts": []})
         self.assertFalse((self.memory_path.parent / "MEMORY.md").exists())
+
+    def test_city_profile_is_not_injected_into_unrelated_prompts(self):
+        self.manager.set_profile("город", "Тестоград")
+
+        context = self.manager.get_context_for_prompt("что можешь рассказать про кбгу")
+
+        self.assertNotIn("Тестоград", context)
+
+    def test_city_profile_is_available_for_location_prompts(self):
+        self.manager.set_profile("город", "Тестоград")
+
+        context = self.manager.get_context_for_prompt("какая погода")
+
+        self.assertIn("Тестоград", context)
+
+    def test_location_query_classifier(self):
+        self.assertFalse(is_location_sensitive_query("что можешь рассказать про кбгу"))
+        self.assertFalse(is_location_sensitive_query("интересный факт об эйнштейне"))
+        self.assertTrue(is_location_sensitive_query("какая погода"))
+        self.assertTrue(is_location_sensitive_query("что рядом со мной"))
 
 
 if __name__ == "__main__":

@@ -60,12 +60,6 @@ def extract_slide_count(text: str, default: int = 6) -> int:
     return max(MIN_SLIDES, min(MAX_SLIDES, int(match.group(1))))
 
 
-def is_presentation_request(text: str) -> bool:
-    from main.tool_router import route_intent
-
-    return route_intent(text).skill == "presentations"
-
-
 def _trim(value: Any, limit: int) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if len(text) <= limit:

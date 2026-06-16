@@ -122,11 +122,16 @@ export function SessionPanelWindow({
   const handleDelete = async (session: SessionRecord) => {
     if (!window.confirm(`Удалить сессию «${session.title}»?`)) return;
     await deleteSession(veraFetch, session.id);
-    const next = await syncSessions();
+    let next = await syncSessions();
     if (activeSessionId === session.id) {
+      if (!next[0]) {
+        await createSession(veraFetch);
+        next = await syncSessions();
+      }
       const nextId = next[0]?.id || null;
       setActiveSessionId(nextId);
       writeActiveSessionId(nextId);
+      bumpSessionsRevision();
     }
   };
 

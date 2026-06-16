@@ -17,6 +17,15 @@ _SEARCH_CACHE: "OrderedDict[str, tuple[float, str, list[str]]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 
 
+def _strip_thinking_markup(text: str) -> str:
+    clean = str(text or "").replace("\ufffd", "")
+    clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"^.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"<think>.*$", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"</?think>", "", clean, flags=re.IGNORECASE)
+    return clean.strip()
+
+
 def _cache_lookup(key: str, ttl: int) -> Optional[tuple[str, list[str]]]:
     if ttl <= 0:
         return None
@@ -205,9 +214,9 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
         gen_args["max_tokens"] = mt
     try:
         result = llm.create_chat_completion(messages=messages, **gen_args)
-        answer = result["choices"][0]["message"]["content"].strip()
-        # Удаляем теги мышления, если они все же появились
-        answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
+        answer = _strip_thinking_markup(result["choices"][0]["message"]["content"])
+        if not answer:
+            answer = "Не удалось сформировать итоговый ответ по найденным источникам."
     except Exception as e:
         print(f"[WEB_SEARCH] LLM error: {e}")
         answer = "Не удалось сгенерировать ответ."

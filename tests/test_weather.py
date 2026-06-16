@@ -28,15 +28,15 @@ class WeatherTests(unittest.TestCase):
         search_brave,
         fetch_url,
     ):
-        weather.set_default_city_provider(lambda: "Нальчик")
+        weather.set_default_city_provider(lambda: "Тестоград")
         search_brave.return_value = ["https://example.test/weather"]
         fetch_url.return_value = ("title", "Сейчас 18° и облачно с прояснениями")
 
         with patch("random.choice", side_effect=lambda values: values[0]):
             response = weather.execute_weather_command("погода")
 
-        search_brave.assert_called_once_with("погода Нальчик", max_results=5)
-        self.assertIn("Погода в Нальчик:", response)
+        search_brave.assert_called_once_with("погода Тестоград", max_results=5)
+        self.assertIn("Погода в Тестоград:", response)
         self.assertIn("комфортно", response)
 
     def test_asks_for_city_when_memory_is_empty(self):

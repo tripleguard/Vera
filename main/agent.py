@@ -15,7 +15,6 @@ from supertonic import TTS
 from main.audio_utils import apply_tts_volume
 from main.llm_server import LlamaServer, LlamaClient
 import msvcrt
-from functools import partial
 from web.web_search import web_search_answer, execute_wikipedia_command
 from web.weather import execute_weather_command, set_default_city_provider
 from web.currency import execute_currency_command
@@ -24,7 +23,7 @@ from .commands import HANDLERS, set_speak_callback, set_last_search_urls_ref, st
 from .commands import set_reminder_shutdown_event
 from .commands import start_heartbeat_scheduler, set_heartbeat_speak_callback, set_heartbeat_route_callback, set_heartbeat_shutdown_event
 from .commands.time_commands import start_scheduler
-from user.memory import MemoryManager
+from user.memory import MemoryManager, is_location_sensitive_query
 from user.memory_extractor import extract_facts, should_extract_facts, extract_from_remember_command
 from user.session_store import SessionStore
 
@@ -36,6 +35,7 @@ from .tools.text_document_generator import execute_text_document_creation
 from .tools.document_generator import create_docx, create_md, create_pptx, create_txt
 from .prompt_builder import build_system_prompt, reload_prompt, get_prompt_status
 from .audit import get_audit_logger
+from .voice_control import is_bare_activation_command, is_voice_stop_command
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -62,6 +62,7 @@ _mic_muted_lock = threading.Lock()  # Lock для thread-safe доступа к 
 _shutdown_event = threading.Event()  # Event для graceful shutdown
 _tts_ready_event = threading.Event()
 _agent_ready_event = threading.Event()
+_speech_active_event = threading.Event()
 
 
 def get_agent_readiness() -> dict:
@@ -133,6 +134,34 @@ def _is_simple_greeting(text: str) -> bool:
     if not cleaned:
         return True
     return bool(_GREETING_RE.fullmatch(cleaned))
+
+
+def _message_contains_text(message: dict, needle: str) -> bool:
+    if not needle:
+        return False
+    content = message.get("content") or ""
+    if isinstance(content, list):
+        content = " ".join(
+            str(part.get("text") or "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return needle.casefold() in str(content).casefold()
+
+
+def _filter_session_context_for_query(
+    context_messages: list[dict],
+    query_text: str,
+    profile_city: Optional[str],
+) -> list[dict]:
+    city = str(profile_city or "").strip()
+    if not city or is_location_sensitive_query(query_text):
+        return context_messages
+    return [
+        message
+        for message in context_messages
+        if not _message_contains_text(message, city)
+    ]
+
 
 def _is_small_talk(text: str) -> bool:
     """Определяет, является ли запрос простой болтовней/руганью, для которой НЕ нужны инструменты."""
@@ -560,6 +589,7 @@ def _tts_worker():
                     if action == 'say':
                         text = cmd.get('text', '')
                         if text:
+                            _speech_active_event.set()
                             # 1. Показываем анимацию размышления (загрузка синтеза)
                             _send_ws({"type": "state", "value": "thinking"})
                             try:
@@ -625,6 +655,7 @@ def _tts_worker():
                             except Exception as e:
                                 print(f"[TTS] Ошибка генерации/воспроизведения: {e}")
                             finally:
+                                _speech_active_event.clear()
                                 _send_ws({"type": "state", "value": "listening"})
                                 
                     elif action == 'stop':
@@ -632,11 +663,13 @@ def _tts_worker():
                             sd.stop()
                         except Exception:
                             pass
+                        _speech_active_event.clear()
                     elif action == 'quit':
                         try:
                             sd.stop()
                         except Exception:
                             pass
+                        _speech_active_event.clear()
                         return
         except Exception as e:
             retry_count += 1
@@ -716,6 +749,16 @@ def _clean_for_tts(text: str) -> str:
     except Exception:
         return text
 
+
+def _sanitize_assistant_response(text: str) -> str:
+    clean = str(text or "").replace("\ufffd", "")
+    clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"^.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"<think>.*$", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"</?think>", "", clean, flags=re.IGNORECASE)
+    return clean.strip()
+
+
 def speak(text: str):
     try:
         while True:
@@ -729,6 +772,11 @@ def speak(text: str):
     return _tts_thread
 
 def interrupt_speech():
+    try:
+        while True:
+            _tts_queue.get_nowait()
+    except queue.Empty:
+        pass
     _tts_queue.put({'cmd': 'stop'})
 
 print("Загрузка модели Sherpa-ONNX...")
@@ -940,6 +988,7 @@ def _handle_user_command(
         )
     except Exception as e:
         response = f"Ошибка обработки запроса: {e}"
+    response = _sanitize_assistant_response(response)
     
     # Логирование в память (чистый текст!)
     try:
@@ -1370,7 +1419,13 @@ def ask_llm(
     messages = [{"role": "system", "content": system_content}]
     try:
         active_session_id = session_id or _current_session_id.get()
-        for m in session_store.get_context_messages(active_session_id) if active_session_id else []:
+        context_messages = session_store.get_context_messages(active_session_id) if active_session_id else []
+        context_messages = _filter_session_context_for_query(
+            context_messages,
+            user_text,
+            memory_manager.get_profile("город"),
+        )
+        for m in context_messages:
             messages.append(m)
     except Exception:
         pass
@@ -1433,12 +1488,15 @@ def ask_llm(
         text = re.sub(r"<think>.*?</think>", "", str(content), flags=re.DOTALL)
         return re.sub(r"<think>.*$", "", text, flags=re.DOTALL).strip()
 
-    def _clean_generated_text(text: str) -> str:
+    def _clean_generated_chunk(text: str) -> str:
         clean = str(text or "").replace("\ufffd", "")
         clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL)
         clean = re.sub(r"^.*?</think>", "", clean, flags=re.DOTALL)
         clean = re.sub(r"<think>.*$", "", clean, flags=re.DOTALL)
-        return clean.strip()
+        return clean
+
+    def _clean_generated_text(text: str) -> str:
+        return _clean_generated_chunk(text).strip()
 
     def _retry_without_thinking() -> Optional[dict]:
         retry_messages = [dict(message) for message in messages]
@@ -1499,8 +1557,8 @@ def ask_llm(
             nonlocal full_thoughts, saw_thought
             if not chunk_text or not thinking_enabled:
                 return
-            clean = str(chunk_text).replace("\ufffd", "").strip()
-            if not clean:
+            clean = str(chunk_text).replace("\ufffd", "")
+            if not clean.strip():
                 saw_thought = True
                 return
             full_thoughts += clean
@@ -1529,9 +1587,9 @@ def ask_llm(
                         in_think = False
                         continue
                     if start_idx == -1:
-                        _append_chat(_clean_generated_text(chunk_text))
+                        _append_chat(_clean_generated_chunk(chunk_text))
                         break
-                    _append_chat(_clean_generated_text(chunk_text[:start_idx]))
+                    _append_chat(_clean_generated_chunk(chunk_text[:start_idx]))
                     chunk_text = chunk_text[start_idx + len("<think>"):]
                     in_think = True
                     saw_thought = True
@@ -1788,6 +1846,8 @@ def _handle_tool_calls(
                         LAST_SEARCH_URLS,
                     )
                     tool_outputs.append(f"web_search: {output}")
+                    had_successful_tool = True
+                    terminal_tool_output = str(output)
                     _send_ws({
                         "type": "tool_result",
                         "name": "web_search",
@@ -1942,14 +2002,22 @@ def run_main_loop():
             if not text:
                 continue
 
+            voice_stop = is_voice_stop_command(text, cfg["activation_word"])
+            bare_activation = is_bare_activation_command(text, cfg["activation_word"])
+
+            if voice_stop:
+                if is_timer_ringing():
+                    interrupt_speech()
+                    stop_timer_ring()
+                    _send_ws({"type": "timer_done"})
+                    _send_ws({"type": "text", "value": "Таймер отключён."})
+                    continue
+                if _speech_active_event.is_set() or not bare_activation:
+                    interrupt_speech()
+                    continue
+
             if _is_activation(text):
                 interrupt_speech()
-
-            if is_timer_ringing():
-                if _is_activation(text) or text.strip().lower() in ("стоп", "хватит", "отключи", "выключи"):
-                    stop_timer_ring()
-                    speak("Таймер отключён.")
-                    continue
 
             if not listening_for_command:
                 if _is_activation(text):
