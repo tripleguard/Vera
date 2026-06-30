@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { SessionSidebar } from './SessionSidebar';
 import {
   createSession,
@@ -17,69 +17,87 @@ import {
 
 type AuthFetch = (url: RequestInfo, options?: RequestInit) => Promise<Response>;
 
+const EMPTY_WORKING_SESSION_IDS = new Set<string>();
+
 interface SessionPanelWindowProps {
   veraFetch: AuthFetch;
   onSkills: () => void;
   onProjects: () => void;
+  onNotes: () => void;
   onSessionOpen: () => void;
-  activeSection: 'skills' | 'projects' | null;
+  activeSection: 'skills' | 'projects' | 'notes' | null;
 }
 
 export function SessionPanelWindow({
   veraFetch,
   onSkills,
   onProjects,
+  onNotes,
   onSessionOpen,
   activeSection,
 }: SessionPanelWindowProps) {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => readActiveSessionId());
+  const [archiveMode, setArchiveMode] = useState(false);
+  const mountedRef = useRef(true);
+  const refreshTimerRef = useRef<number | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const next = await listSessions(veraFetch, archiveMode);
+      if (!mountedRef.current) return;
+      setSessions(next);
+    } catch (error) {
+      console.error('Failed to refresh sessions panel', error);
+    }
+  }, [archiveMode, veraFetch]);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current != null) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void refresh();
+    }, 120);
+  }, [refresh]);
 
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
 
-    const refresh = async () => {
-      try {
-        const next = await listSessions(veraFetch);
-        if (!mounted) return;
-        setSessions(next);
-        const selectedId = readActiveSessionId();
-        if (!selectedId && next[0]) {
-          setActiveSessionId(next[0].id);
-          writeActiveSessionId(next[0].id);
-        }
-      } catch (error) {
-        console.error('Failed to refresh sessions panel', error);
+    void refresh();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') {
+        void refresh();
       }
-    };
-
-    refresh();
-    const intervalId = window.setInterval(refresh, 10000);
+    }, 10000);
 
     const onStorage = (event: StorageEvent) => {
       if (event.key === 'vera_active_session_id') {
         setActiveSessionId(readActiveSessionId());
       }
       if (event.key === 'vera_sessions_revision') {
-        refresh();
+        scheduleRefresh();
       }
     };
     const onActiveSession = () => setActiveSessionId(readActiveSessionId());
 
     window.addEventListener('storage', onStorage);
     window.addEventListener(ACTIVE_SESSION_EVENT, onActiveSession);
-    window.addEventListener(SESSIONS_REV_EVENT, refresh);
+    window.addEventListener(SESSIONS_REV_EVENT, scheduleRefresh);
     return () => {
-      mounted = false;
+      mountedRef.current = false;
       window.clearInterval(intervalId);
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
       window.removeEventListener('storage', onStorage);
       window.removeEventListener(ACTIVE_SESSION_EVENT, onActiveSession);
-      window.removeEventListener(SESSIONS_REV_EVENT, refresh);
+      window.removeEventListener(SESSIONS_REV_EVENT, scheduleRefresh);
     };
-  }, [veraFetch]);
+  }, [refresh, scheduleRefresh]);
 
   const syncSessions = async () => {
-    const next = await listSessions(veraFetch);
+    const next = await listSessions(veraFetch, archiveMode);
     setSessions(next);
     bumpSessionsRevision();
     return next;
@@ -94,10 +112,12 @@ export function SessionPanelWindow({
 
   const handleNew = async () => {
     onSessionOpen();
+    setArchiveMode(false);
     const created = await createSession(veraFetch);
     setActiveSessionId(created.id);
     writeActiveSessionId(created.id);
-    await syncSessions();
+    setSessions(await listSessions(veraFetch, false));
+    bumpSessionsRevision();
   };
 
   const handlePatch = async (
@@ -109,9 +129,9 @@ export function SessionPanelWindow({
   };
 
   const handleArchive = async (session: SessionRecord) => {
-    await handlePatch(session, { archived: true });
-    if (activeSessionId === session.id) {
-      const remaining = (await listSessions(veraFetch))[0];
+    await handlePatch(session, { archived: !archiveMode });
+    if (!archiveMode && activeSessionId === session.id) {
+      const remaining = (await listSessions(veraFetch, false))[0];
       const nextId = remaining?.id || null;
       setActiveSessionId(nextId);
       writeActiveSessionId(nextId);
@@ -122,12 +142,8 @@ export function SessionPanelWindow({
   const handleDelete = async (session: SessionRecord) => {
     if (!window.confirm(`Удалить сессию «${session.title}»?`)) return;
     await deleteSession(veraFetch, session.id);
-    let next = await syncSessions();
+    const next = await syncSessions();
     if (activeSessionId === session.id) {
-      if (!next[0]) {
-        await createSession(veraFetch);
-        next = await syncSessions();
-      }
       const nextId = next[0]?.id || null;
       setActiveSessionId(nextId);
       writeActiveSessionId(nextId);
@@ -140,7 +156,7 @@ export function SessionPanelWindow({
       <SessionSidebar
         sessions={sessions}
         activeSessionId={activeSessionId}
-        workingSessionIds={new Set()}
+        workingSessionIds={EMPTY_WORKING_SESSION_IDS}
         onSelect={sessionId => { void handleSelect(sessionId); }}
         onNew={() => { void handleNew(); }}
         onRename={session => {
@@ -152,8 +168,11 @@ export function SessionPanelWindow({
         onPin={session => { void handlePatch(session, { pinned: !session.pinned }); }}
         onArchive={session => { void handleArchive(session); }}
         onDelete={session => { void handleDelete(session); }}
+        archiveMode={archiveMode}
+        onArchiveModeChange={setArchiveMode}
         onSkills={onSkills}
         onProjects={onProjects}
+        onNotes={onNotes}
         activeSection={activeSection}
       />
     </div>

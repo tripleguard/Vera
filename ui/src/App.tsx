@@ -1,17 +1,16 @@
 import { useEffect, useState, useRef, useCallback, useMemo, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Paperclip, X, ExternalLink, FolderOpen, FileText, FileStack, Mic, MicOff, Brain, ChevronDown, ChevronUp, ChevronRight, Pin, Trash2, Search, Database, Plus, Save, PanelRight, PanelLeft, Palette, Cpu, Volume2, Globe2, Clock3, SlidersHorizontal, Minus, Maximize2, Minimize2, TerminalSquare, UploadCloud, Folder, File as FileIcon, RefreshCw, Boxes, Wrench } from 'lucide-react';
+import { Paperclip, X, ExternalLink, FolderOpen, FileText, FileStack, Mic, MicOff, Brain, ChevronDown, ChevronUp, ChevronRight, Pin, Trash2, Search, Database, Plus, Save, PanelRight, PanelLeft, Palette, Cpu, Volume2, Globe2, Clock3, SlidersHorizontal, Minus, Maximize2, Minimize2, TerminalSquare, UploadCloud, Folder, File as FileIcon, RefreshCw, Boxes, Wrench, Pencil, Eraser, CheckSquare2, Settings } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { connectSocketWithReconnect } from './services/socketService';
 import { SessionPanelWindow } from './components/SessionPanelWindow';
 import {
     createSession,
+    getSession,
     listSessions,
     loadSessionMessages,
 } from './services/sessionService';
 import { ACTIVE_SESSION_EVENT, ACTIVE_SESSION_STORAGE_KEY, SESSIONS_REV_EVENT, SESSIONS_REV_STORAGE_KEY, bumpSessionsRevision, readActiveSessionId, writeActiveSessionId } from './services/sessionSync';
-
-import { Settings } from 'lucide-react';
 
 const ipcRenderer = window.veraDesktop || null;
 
@@ -38,6 +37,12 @@ const THEME_STORAGE_KEY = 'vera_theme';
 const RUNTIME_MODEL_STORAGE_KEY = 'vera_runtime_model_name';
 const WORKSPACE_DIRECTORY_STORAGE_KEY = 'vera_workspace_directory';
 const WORKSPACE_FILE_DRAG_TYPE = 'application/x-vera-workspace-file';
+const NOTES_STORAGE_KEY = 'vera_notes_workspace_v1';
+const NOTES_SAVE_DEBOUNCE_MS = 350;
+const NOTE_BRUSH_COLORS = ['#05070a', '#ef4444', '#facc15', '#8cb7ff', '#44d7b6', '#f59f5a', '#f3f6ff'];
+const NOTE_CANVAS_MIN_ZOOM = 0.5;
+const NOTE_CANVAS_MAX_ZOOM = 3;
+const NOTE_CANVAS_BACKING_SCALE = 3;
 
 type WorkspacePanelMode = 'files' | 'terminal';
 
@@ -63,6 +68,28 @@ type SkillEntry = {
     source: 'builtin' | 'user';
     activation: string;
     model_profile: string;
+};
+
+type NoteTask = {
+    id: string;
+    text: string;
+    done: boolean;
+    priority: 'low' | 'normal' | 'high';
+};
+
+type NoteEntry = {
+    id: string;
+    title: string;
+    body: string;
+    tasks: NoteTask[];
+    drawing?: string;
+    updatedAt: number;
+};
+
+type ParsedMessage = {
+    cleanText: string;
+    sources: string[];
+    docPath: string | null;
 };
 
 const TOOL_ACTIVITY_LABELS: Record<string, string> = {
@@ -96,7 +123,7 @@ async function veraFetch(url: RequestInfo, options: RequestInit = {}): Promise<R
     return fetch(url, options);
 }
 
-function parseMessage(text: string): { cleanText: string; sources: string[], docPath: string | null } {
+function parseMessage(text: string): ParsedMessage {
     const sources: string[] = [];
     let cleanText = text || '';
     let docPath: string | null = null;
@@ -293,55 +320,57 @@ function CodeBlock({ code, language, isLightMode }: { code: string, language: st
 }
 
 function AssistantMessageText({ text, isLightMode }: { text: string, isLightMode: boolean }) {
+    const markdownComponents = useMemo(() => ({
+        pre: ({ children }: any) => <>{children}</>,
+        p: ({ children }: any) => <p className="whitespace-pre-wrap leading-relaxed mb-2 last:mb-0">{children}</p>,
+        strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
+        em: ({ children }: any) => <em className="italic">{children}</em>,
+        ul: ({ children }: any) => <ul className="list-disc pl-5 space-y-1 my-2">{children}</ul>,
+        ol: ({ children }: any) => <ol className="list-decimal pl-5 space-y-1 my-2">{children}</ol>,
+        li: ({ children }: any) => <li className="leading-relaxed">{children}</li>,
+        blockquote: ({ children }: any) => (
+            <blockquote className={`border-l-2 pl-3 italic my-2 ${isLightMode ? 'border-gray-300 text-gray-700' : 'border-white/20 text-white/70'}`}>
+                {children}
+            </blockquote>
+        ),
+        a: ({ href, children }: any) => (
+            <a
+                href={href}
+                onClick={(e: React.MouseEvent<HTMLAnchorElement>) => {
+                    if (href && ipcRenderer) {
+                        e.preventDefault();
+                        void ipcRenderer.openExternal(href);
+                    }
+                }}
+                className={`underline underline-offset-2 ${isLightMode ? 'text-blue-700 hover:text-blue-800' : 'text-blue-300 hover:text-blue-200'}`}
+            >
+                {children}
+            </a>
+        ),
+        code: ({ inline, className, children }: any) => {
+            const raw = String(children ?? '').replace(/\n$/, '');
+            if (inline) {
+                return (
+                    <code className={`px-1 py-0.5 rounded text-[13px] ${isLightMode ? 'bg-gray-100 text-gray-800' : 'bg-white/10 text-gray-100'}`}>
+                        {raw}
+                    </code>
+                );
+            }
+            const langMatch = /language-([a-zA-Z0-9_+.-]+)/.exec(className || '');
+            return (
+                <CodeBlock
+                    code={raw}
+                    language={langMatch?.[1] || 'text'}
+                    isLightMode={isLightMode}
+                />
+            );
+        },
+    }), [isLightMode]);
+
     return (
         <div className="space-y-2">
             <ReactMarkdown
-                components={{
-                    pre: ({ children }) => <>{children}</>,
-                    p: ({ children }) => <p className="whitespace-pre-wrap leading-relaxed mb-2 last:mb-0">{children}</p>,
-                    strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-                    em: ({ children }) => <em className="italic">{children}</em>,
-                    ul: ({ children }) => <ul className="list-disc pl-5 space-y-1 my-2">{children}</ul>,
-                    ol: ({ children }) => <ol className="list-decimal pl-5 space-y-1 my-2">{children}</ol>,
-                    li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                    blockquote: ({ children }) => (
-                        <blockquote className={`border-l-2 pl-3 italic my-2 ${isLightMode ? 'border-gray-300 text-gray-700' : 'border-white/20 text-white/70'}`}>
-                            {children}
-                        </blockquote>
-                    ),
-                    a: ({ href, children }) => (
-                        <a
-                            href={href}
-                            onClick={(e) => {
-                                if (href && ipcRenderer) {
-                                    e.preventDefault();
-                                    void ipcRenderer.openExternal(href);
-                                }
-                            }}
-                            className={`underline underline-offset-2 ${isLightMode ? 'text-blue-700 hover:text-blue-800' : 'text-blue-300 hover:text-blue-200'}`}
-                        >
-                            {children}
-                        </a>
-                    ),
-                    code: ({ inline, className, children }: any) => {
-                        const raw = String(children ?? '').replace(/\n$/, '');
-                        if (inline) {
-                            return (
-                                <code className={`px-1 py-0.5 rounded text-[13px] ${isLightMode ? 'bg-gray-100 text-gray-800' : 'bg-white/10 text-gray-100'}`}>
-                                    {raw}
-                                </code>
-                            );
-                        }
-                        const langMatch = /language-([a-zA-Z0-9_+.-]+)/.exec(className || '');
-                        return (
-                            <CodeBlock
-                                code={raw}
-                                language={langMatch?.[1] || 'text'}
-                                isLightMode={isLightMode}
-                            />
-                        );
-                    },
-                }}
+                components={markdownComponents}
             >
                 {text}
             </ReactMarkdown>
@@ -426,6 +455,7 @@ function SettingsModal({
     const [config, setConfig] = useState<any>(null);
     const [tasks, setTasks] = useState<any[]>([]);
     const [memory, setMemory] = useState<MemoryPayload | null>(null);
+    const [settingsRuntimeInfo, setSettingsRuntimeInfo] = useState<RuntimeInfo | null>(null);
     const [profileDrafts, setProfileDrafts] = useState<Record<string, string>>({});
     const [memorySearch, setMemorySearch] = useState('');
     const [memoryCategory, setMemoryCategory] = useState('all');
@@ -455,12 +485,16 @@ function SettingsModal({
         if (isOpen) {
             setActiveSettingsSection(initialSection || 'appearance');
             setMessage('');
+            setSettingsRuntimeInfo(null);
             Promise.all([
                 veraFetch('http://127.0.0.1:8000/api/config').then(res => res.json()),
                 veraFetch('http://127.0.0.1:8000/api/heartbeat-tasks').then(res => res.json()),
-                veraFetch('http://127.0.0.1:8000/api/memory').then(res => res.json())
+                veraFetch('http://127.0.0.1:8000/api/memory').then(res => res.json()),
+                veraFetch('http://127.0.0.1:8000/api/runtime-info')
+                    .then(res => res.ok ? res.json() : null)
+                    .catch(() => null),
             ])
-                .then(([cfgData, tasksData, memoryData]) => {
+                .then(([cfgData, tasksData, memoryData, runtimeData]) => {
                     const normalizedConfig = {
                         ...cfgData,
                         model: {
@@ -478,6 +512,9 @@ function SettingsModal({
                         facts: Array.isArray(memoryData?.facts) ? memoryData.facts : [],
                         categories: Array.isArray(memoryData?.categories) ? memoryData.categories : [],
                     });
+                    if (runtimeData) {
+                        setSettingsRuntimeInfo(runtimeData);
+                    }
                     setProfileDrafts(memoryData?.profile || {});
                 })
                 .catch(err => setMessage('Ошибка загрузки настроек: ' + err.message));
@@ -490,6 +527,12 @@ function SettingsModal({
     }, [initialSection, isOpen]);
 
     if (!isOpen) return null;
+
+    const llamaCppBuild = settingsRuntimeInfo?.llama_cpp?.build;
+    const llamaCppRawVersion = String(settingsRuntimeInfo?.llama_cpp?.raw || '').split('\n')[0].trim();
+    const llamaCppVersionLabel = typeof llamaCppBuild === 'number' && Number.isFinite(llamaCppBuild)
+        ? `b${llamaCppBuild}`
+        : (llamaCppRawVersion || (settingsRuntimeInfo ? 'Не определена' : 'Проверяю...'));
 
     const handleSave = async () => {
         const numericDrafts = [
@@ -987,6 +1030,10 @@ function SettingsModal({
                                             onChange={e => handleChange('model', 'ctx_size', e.target.value, 'number')}
                                             className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-white/30"
                                         />
+                                    </div>
+                                    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                                        <label className="block text-sm opacity-80 mb-1">Версия llama.cpp</label>
+                                        <div className="text-sm font-medium text-[color:var(--vera-text)]">{llamaCppVersionLabel}</div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
@@ -1693,6 +1740,9 @@ interface Message {
     fileSize?: number;
     imagePreview?: string;
     streaming?: boolean;
+    streamStartedAt?: number;
+    streamChars?: number;
+    tokensPerSecond?: number;
 }
 
 interface LogEntry {
@@ -1707,6 +1757,27 @@ interface RuntimeInfo {
     version: string;
     model_name: string;
     model_path?: string;
+    llama_cpp?: {
+        build?: number | null;
+        raw?: string;
+        path?: string;
+        error?: string;
+    };
+}
+
+interface LlamaUpdateInfo {
+    status: string;
+    update_available: boolean;
+    current?: {
+        build?: number | null;
+        raw?: string;
+    };
+    latest?: {
+        tag?: string;
+        build?: number | null;
+    } | null;
+    installed?: boolean;
+    error?: string;
 }
 
 function SourceChips({ sources }: { sources: string[] }) {
@@ -1748,19 +1819,36 @@ function EmptyChatStage({ isLightMode }: { isLightMode: boolean }) {
 const MessageBubble = memo(function MessageBubble({
     msg,
     isLightMode,
+    onImageOpen,
+    onImageContextMenu,
 }: {
     msg: Message;
     isLightMode: boolean;
+    onImageOpen: (src: string, alt?: string) => void;
+    onImageContextMenu: (event: React.MouseEvent, src: string) => void;
 }) {
+    const parsedMessage = useMemo(
+        () => (msg.role === 'assistant' ? parseMessage(msg.text) : null),
+        [msg.role, msg.text],
+    );
+
     if (msg.role === 'user') {
         return (
             <div className="user-message-stack">
                 {msg.imagePreview && (
-                    <img
-                        src={msg.imagePreview}
-                        alt={msg.file || 'Прикреплённое изображение'}
-                        className="user-message-image"
-                    />
+                    <button
+                        type="button"
+                        className="user-message-image-button"
+                        onClick={() => onImageOpen(msg.imagePreview as string, msg.file || 'Прикреплённое изображение')}
+                        onContextMenu={event => onImageContextMenu(event, msg.imagePreview as string)}
+                        title="Открыть изображение"
+                    >
+                        <img
+                            src={msg.imagePreview}
+                            alt={msg.file || 'Прикреплённое изображение'}
+                            className="user-message-image"
+                        />
+                    </button>
                 )}
                 {msg.file && !msg.imagePreview && (
                     <div className={`user-message-file ${isLightMode ? 'light' : ''}`}>
@@ -1799,7 +1887,7 @@ const MessageBubble = memo(function MessageBubble({
                     {msg.text && <div>{msg.text}</div>}
                 </>
             ) : (() => {
-                const { cleanText, sources, docPath } = parseMessage(msg.text);
+                const { cleanText, sources, docPath } = parsedMessage as ParsedMessage;
                 return (
                     <>
                         {msg.thoughts && <ThinkingBlock thoughts={msg.thoughts} isLightMode={isLightMode} />}
@@ -1835,12 +1923,156 @@ const MessageBubble = memo(function MessageBubble({
                                 </button>
                             </div>
                         )}
+                        {msg.tokensPerSecond && msg.tokensPerSecond > 0 && (
+                            <div className="assistant-speed-meter">
+                                {msg.tokensPerSecond.toFixed(1)} ток/с
+                            </div>
+                        )}
                     </>
                 );
             })()}
         </div>
     );
 });
+
+const MessageRow = memo(function MessageRow({
+    msg,
+    rowId,
+    isLightMode,
+    reduceMotion,
+    onImageOpen,
+    onImageContextMenu,
+}: {
+    msg: Message;
+    rowId: string;
+    isLightMode: boolean;
+    reduceMotion: boolean;
+    onImageOpen: (src: string, alt?: string) => void;
+    onImageContextMenu: (event: React.MouseEvent, src: string) => void;
+}) {
+    const rowClassName = `vera-workspace-message-row flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`;
+    const bubble = (
+        <MessageBubble
+            msg={msg}
+            isLightMode={isLightMode}
+            onImageOpen={onImageOpen}
+            onImageContextMenu={onImageContextMenu}
+        />
+    );
+
+    if (reduceMotion || !msg.streaming) {
+        return (
+            <div className={rowClassName}>
+                {bubble}
+            </div>
+        );
+    }
+
+    return (
+        <motion.div
+            key={rowId}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className={rowClassName}
+        >
+            {bubble}
+        </motion.div>
+    );
+});
+
+async function copyImageToClipboard(src: string): Promise<void> {
+    if (ipcRenderer && src.startsWith('data:image/')) {
+        await ipcRenderer.invoke('clipboard-write-image', src);
+        return;
+    }
+    try {
+        const response = await fetch(src);
+        const blob = await response.blob();
+        const ClipboardItemCtor = (window as any).ClipboardItem;
+        if (!navigator.clipboard || !ClipboardItemCtor) {
+            throw new Error('Image clipboard API is unavailable');
+        }
+        await navigator.clipboard.write([
+            new ClipboardItemCtor({ [blob.type || 'image/png']: blob }),
+        ]);
+    } catch (error) {
+        console.warn('Failed to copy image to clipboard', error);
+    }
+}
+
+function ImagePreviewOverlay({
+    image,
+    onClose,
+    onImageContextMenu,
+}: {
+    image: { src: string; alt?: string } | null;
+    onClose: () => void;
+    onImageContextMenu: (event: React.MouseEvent, src: string) => void;
+}) {
+    if (!image) return null;
+    return (
+        <div className="image-preview-overlay no-drag-region" onClick={onClose}>
+            <button type="button" className="image-preview-close" onClick={onClose} title="Закрыть">
+                <X size={16} />
+            </button>
+            <button
+                type="button"
+                className="image-preview-copy"
+                onClick={event => {
+                    event.stopPropagation();
+                    void copyImageToClipboard(image.src);
+                }}
+            >
+                Скопировать
+            </button>
+            <img
+                src={image.src}
+                alt={image.alt || 'Изображение'}
+                onClick={event => event.stopPropagation()}
+                onContextMenu={event => onImageContextMenu(event, image.src)}
+            />
+        </div>
+    );
+}
+
+function ImageContextMenu({
+    menu,
+    onClose,
+}: {
+    menu: { x: number; y: number; src: string } | null;
+    onClose: () => void;
+}) {
+    useEffect(() => {
+        if (!menu) return;
+        const close = () => onClose();
+        window.addEventListener('click', close);
+        window.addEventListener('keydown', close);
+        return () => {
+            window.removeEventListener('click', close);
+            window.removeEventListener('keydown', close);
+        };
+    }, [menu, onClose]);
+
+    if (!menu) return null;
+    return (
+        <div
+            className="image-context-menu no-drag-region"
+            style={{ left: menu.x, top: menu.y }}
+            onClick={event => event.stopPropagation()}
+        >
+            <button
+                type="button"
+                onClick={() => {
+                    void copyImageToClipboard(menu.src);
+                    onClose();
+                }}
+            >
+                Скопировать
+            </button>
+        </div>
+    );
+}
 
 function WorkspaceTreeRow({
     entry,
@@ -2170,6 +2402,587 @@ function WorkspacePanel({
     );
 }
 
+function createNoteId(): string {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createBlankNote(): NoteEntry {
+    const now = Date.now();
+    return {
+        id: createNoteId(),
+        title: 'Новая заметка',
+        body: '',
+        tasks: [],
+        updatedAt: now,
+    };
+}
+
+function loadStoredNotes(): NoteEntry[] {
+    try {
+        const raw = localStorage.getItem(NOTES_STORAGE_KEY);
+        if (!raw) return [createBlankNote()];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [createBlankNote()];
+        const notes = parsed
+            .filter(item => item && typeof item === 'object')
+            .map((item): NoteEntry => ({
+                id: String(item.id || createNoteId()),
+                title: String(item.title || 'Без названия'),
+                body: String(item.body || ''),
+                tasks: Array.isArray(item.tasks)
+                    ? item.tasks.map((task: any): NoteTask => ({
+                        id: String(task.id || createNoteId()),
+                        text: String(task.text || ''),
+                        done: Boolean(task.done),
+                        priority: task.priority === 'low' || task.priority === 'high' ? task.priority : 'normal',
+                    })).filter((task: NoteTask) => task.text.trim())
+                    : [],
+                drawing: typeof item.drawing === 'string' ? item.drawing : undefined,
+                updatedAt: Number(item.updatedAt || Date.now()),
+            }));
+        return notes.length ? notes : [createBlankNote()];
+    } catch {
+        return [createBlankNote()];
+    }
+}
+
+function formatNoteDate(timestamp: number): string {
+    try {
+        return new Date(timestamp).toLocaleString('ru-RU', {
+            day: '2-digit',
+            month: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    } catch {
+        return '';
+    }
+}
+
+function NotesView() {
+    const [notes, setNotes] = useState<NoteEntry[]>(() => loadStoredNotes());
+    const [activeNoteId, setActiveNoteId] = useState('');
+    const [taskDraft, setTaskDraft] = useState('');
+    const [brushColor, setBrushColor] = useState(NOTE_BRUSH_COLORS[0]);
+    const [brushSize, setBrushSize] = useState(4);
+    const [drawMode, setDrawMode] = useState<'draw' | 'erase'>('draw');
+    const [canvasZoom, setCanvasZoom] = useState(1);
+    const [canvasExpanded, setCanvasExpanded] = useState(false);
+    const canvasStageRef = useRef<HTMLDivElement | null>(null);
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const drawingCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    const drawingRef = useRef(false);
+    const lastPointRef = useRef<{ x: number; y: number } | null>(null);
+    const notesSaveTimerRef = useRef<number | null>(null);
+    const latestNotesRef = useRef(notes);
+    const loadedDrawingNoteIdRef = useRef<string | null>(null);
+    const loadedDrawingSourceRef = useRef<string | null>(null);
+
+    const activeNote = notes.find(note => note.id === activeNoteId) || notes[0];
+
+    useEffect(() => {
+        latestNotesRef.current = notes;
+        if (notesSaveTimerRef.current != null) {
+            window.clearTimeout(notesSaveTimerRef.current);
+        }
+        notesSaveTimerRef.current = window.setTimeout(() => {
+            localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(latestNotesRef.current));
+            notesSaveTimerRef.current = null;
+        }, NOTES_SAVE_DEBOUNCE_MS);
+    }, [notes]);
+
+    useEffect(() => () => {
+        if (notesSaveTimerRef.current != null) {
+            window.clearTimeout(notesSaveTimerRef.current);
+            notesSaveTimerRef.current = null;
+        }
+        localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(latestNotesRef.current));
+    }, []);
+
+    useEffect(() => {
+        if ((!activeNoteId || !activeNote) && notes[0]) {
+            setActiveNoteId(notes[0].id);
+        }
+    }, [activeNote, activeNoteId, notes]);
+
+    const updateActiveNote = useCallback((patch: Partial<NoteEntry>) => {
+        if (!activeNote) return;
+        setNotes(current => current.map(note => (
+            note.id === activeNote.id
+                ? { ...note, ...patch, updatedAt: Date.now() }
+                : note
+        )));
+    }, [activeNote]);
+
+    const persistCanvas = useCallback(() => {
+        if (!activeNote || !drawingCanvasRef.current) return;
+        const dataUrl = drawingCanvasRef.current.toDataURL('image/png');
+        loadedDrawingSourceRef.current = dataUrl;
+        setNotes(current => current.map(note => (
+            note.id === activeNote.id
+                ? { ...note, drawing: dataUrl, updatedAt: Date.now() }
+                : note
+        )));
+    }, [activeNote]);
+
+    const paintCanvasBackground = useCallback((ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+    }, []);
+
+    const paintDrawingBackground = useCallback((ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+    }, []);
+
+    const getViewportSourceSize = useCallback(() => {
+        const canvas = canvasRef.current;
+        const drawingCanvas = drawingCanvasRef.current;
+        if (!canvas || !drawingCanvas) {
+            return { sourceWidth: 1, sourceHeight: 1 };
+        }
+        return {
+            sourceWidth: Math.min(
+                drawingCanvas.width,
+                Math.max(1, Math.floor((canvas.width / window.devicePixelRatio / canvasZoom) * NOTE_CANVAS_BACKING_SCALE)),
+            ),
+            sourceHeight: Math.min(
+                drawingCanvas.height,
+                Math.max(1, Math.floor((canvas.height / window.devicePixelRatio / canvasZoom) * NOTE_CANVAS_BACKING_SCALE)),
+            ),
+        };
+    }, [canvasZoom]);
+
+    const renderViewport = useCallback(() => {
+        const canvas = canvasRef.current;
+        const drawingCanvas = drawingCanvasRef.current;
+        if (!canvas || !drawingCanvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        paintCanvasBackground(ctx, canvas);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        const { sourceWidth, sourceHeight } = getViewportSourceSize();
+        ctx.drawImage(
+            drawingCanvas,
+            0,
+            0,
+            sourceWidth,
+            sourceHeight,
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+        );
+    }, [getViewportSourceSize, paintCanvasBackground]);
+
+    const ensureDrawingCanvas = useCallback((stageWidth: number, stageHeight: number) => {
+        const worldWidth = Math.max(320, Math.ceil(stageWidth / NOTE_CANVAS_MIN_ZOOM));
+        const worldHeight = Math.max(220, Math.ceil(stageHeight / NOTE_CANVAS_MIN_ZOOM));
+        const backingWidth = Math.ceil(worldWidth * NOTE_CANVAS_BACKING_SCALE);
+        const backingHeight = Math.ceil(worldHeight * NOTE_CANVAS_BACKING_SCALE);
+        const current = drawingCanvasRef.current;
+        if (current && current.width >= backingWidth && current.height >= backingHeight) {
+            return current;
+        }
+
+        const next = document.createElement('canvas');
+        next.width = backingWidth;
+        next.height = backingHeight;
+        const nextCtx = next.getContext('2d');
+        if (nextCtx) {
+            paintDrawingBackground(nextCtx, next);
+            if (current) {
+                nextCtx.drawImage(current, 0, 0);
+            }
+        }
+        drawingCanvasRef.current = next;
+        return next;
+    }, [paintDrawingBackground]);
+
+    const renderCanvas = useCallback(() => {
+        const canvas = canvasRef.current;
+        const stage = canvasStageRef.current;
+        if (!canvas || !activeNote) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const stageRect = stage?.getBoundingClientRect();
+        const stageWidth = Math.max(320, Math.floor(stageRect?.width || canvas.clientWidth || 320));
+        const stageHeight = Math.max(220, Math.floor(stageRect?.height || canvas.clientHeight || 220));
+        const width = Math.max(320, Math.floor(stageWidth * window.devicePixelRatio));
+        const height = Math.max(220, Math.floor(stageHeight * window.devicePixelRatio));
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+        }
+        const drawingCanvas = ensureDrawingCanvas(stageWidth, stageHeight);
+        if (loadedDrawingNoteIdRef.current !== activeNote.id) {
+            loadedDrawingNoteIdRef.current = activeNote.id;
+            loadedDrawingSourceRef.current = null;
+            const drawingCtx = drawingCanvas.getContext('2d');
+            if (drawingCtx) {
+                paintDrawingBackground(drawingCtx, drawingCanvas);
+            }
+        }
+        renderViewport();
+        if (
+            activeNote.drawing
+            && loadedDrawingSourceRef.current !== activeNote.drawing
+            && !drawingRef.current
+        ) {
+            loadedDrawingSourceRef.current = activeNote.drawing;
+            const image = new Image();
+            image.onload = () => {
+                if (loadedDrawingNoteIdRef.current !== activeNote.id) return;
+                const drawingCtx = drawingCanvas.getContext('2d');
+                if (!drawingCtx) return;
+                paintDrawingBackground(drawingCtx, drawingCanvas);
+                drawingCtx.imageSmoothingEnabled = true;
+                drawingCtx.imageSmoothingQuality = 'high';
+                drawingCtx.drawImage(image, 0, 0, drawingCanvas.width, drawingCanvas.height);
+                renderViewport();
+            };
+            image.src = activeNote.drawing;
+        }
+    }, [activeNote, canvasZoom, ensureDrawingCanvas, paintDrawingBackground, renderViewport]);
+
+    useEffect(() => {
+        loadedDrawingNoteIdRef.current = null;
+        loadedDrawingSourceRef.current = null;
+        drawingCanvasRef.current = null;
+    }, [activeNote?.id]);
+
+    useEffect(() => {
+        renderCanvas();
+        window.addEventListener('resize', renderCanvas);
+        return () => window.removeEventListener('resize', renderCanvas);
+    }, [renderCanvas]);
+
+    useEffect(() => {
+        const stage = canvasStageRef.current;
+        if (!stage || typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(() => renderCanvas());
+        observer.observe(stage);
+        return () => observer.disconnect();
+    }, [renderCanvas]);
+
+    useEffect(() => {
+        const frame = window.requestAnimationFrame(renderCanvas);
+        return () => window.cancelAnimationFrame(frame);
+    }, [canvasExpanded, renderCanvas]);
+
+    const getCanvasPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return { x: 0, y: 0 };
+        const rect = canvas.getBoundingClientRect();
+        const { sourceWidth, sourceHeight } = getViewportSourceSize();
+        return {
+            x: Math.max(0, Math.min(sourceWidth, ((event.clientX - rect.left) / rect.width) * sourceWidth)),
+            y: Math.max(0, Math.min(sourceHeight, ((event.clientY - rect.top) / rect.height) * sourceHeight)),
+        };
+    };
+
+    const drawToPoint = (point: { x: number; y: number }) => {
+        const canvas = drawingCanvasRef.current;
+        const previous = lastPointRef.current;
+        if (!canvas || !previous) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = brushSize * NOTE_CANVAS_BACKING_SCALE * (drawMode === 'erase' ? 2.3 : 1);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = drawMode === 'erase' ? '#ffffff' : brushColor;
+        ctx.beginPath();
+        ctx.moveTo(previous.x, previous.y);
+        ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+        lastPointRef.current = point;
+        renderViewport();
+    };
+
+    const drawPoint = (point: { x: number; y: number }) => {
+        const canvas = drawingCanvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = drawMode === 'erase' ? '#ffffff' : brushColor;
+        ctx.beginPath();
+        ctx.arc(
+            point.x,
+            point.y,
+            Math.max(1, (brushSize * NOTE_CANVAS_BACKING_SCALE * (drawMode === 'erase' ? 2.3 : 1)) / 2),
+            0,
+            Math.PI * 2,
+        );
+        ctx.fill();
+        renderViewport();
+    };
+
+    const addNote = () => {
+        const note = createBlankNote();
+        setNotes(current => [note, ...current]);
+        setActiveNoteId(note.id);
+    };
+
+    const deleteNote = (noteId: string) => {
+        const next = notes.filter(note => note.id !== noteId);
+        const replacement = next[0] || createBlankNote();
+        setNotes(next.length ? next : [replacement]);
+        if (activeNoteId === noteId) {
+            setActiveNoteId(replacement.id);
+        }
+    };
+
+    const addTask = () => {
+        const text = taskDraft.trim();
+        if (!activeNote || !text) return;
+        updateActiveNote({
+            tasks: [
+                ...activeNote.tasks,
+                { id: createNoteId(), text, done: false, priority: 'normal' },
+            ],
+        });
+        setTaskDraft('');
+    };
+
+    const updateTask = (taskId: string, patch: Partial<NoteTask>) => {
+        if (!activeNote) return;
+        updateActiveNote({
+            tasks: activeNote.tasks.map(task => task.id === taskId ? { ...task, ...patch } : task),
+        });
+    };
+
+    const removeTask = (taskId: string) => {
+        if (!activeNote) return;
+        updateActiveNote({ tasks: activeNote.tasks.filter(task => task.id !== taskId) });
+    };
+
+    const clearCanvas = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        paintCanvasBackground(ctx, canvas);
+        if (drawingCanvasRef.current) {
+            const drawingCtx = drawingCanvasRef.current.getContext('2d');
+            if (drawingCtx) {
+                paintDrawingBackground(drawingCtx, drawingCanvasRef.current);
+            }
+        }
+        loadedDrawingSourceRef.current = null;
+        updateActiveNote({ drawing: undefined });
+    };
+
+    const completedTasks = activeNote?.tasks.filter(task => task.done).length || 0;
+
+    return (
+        <section className="notes-view no-drag-region">
+            <div className="notes-shell">
+                <aside className="notes-list">
+                    <button type="button" className="notes-list-add" onClick={addNote}>
+                        <Plus size={14} />
+                        Новая заметка
+                    </button>
+                    {notes.map(note => (
+                        <div
+                            key={note.id}
+                            className={`note-list-item ${note.id === activeNote?.id ? 'active' : ''}`}
+                        >
+                            <button type="button" onClick={() => setActiveNoteId(note.id)}>
+                                <span>{note.title || 'Без названия'}</span>
+                                <small>{note.tasks.filter(task => !task.done).length} задач · {formatNoteDate(note.updatedAt)}</small>
+                            </button>
+                            <button
+                                type="button"
+                                className="note-list-delete"
+                                onClick={() => deleteNote(note.id)}
+                                title="Удалить заметку"
+                                aria-label="Удалить заметку"
+                            >
+                                <X size={13} />
+                            </button>
+                        </div>
+                    ))}
+                </aside>
+                {activeNote && (
+                    <div className="note-editor">
+                        <div className="note-editor-main">
+                            <input
+                                className="note-title-input"
+                                value={activeNote.title}
+                                onChange={event => updateActiveNote({ title: event.target.value })}
+                                placeholder="Название"
+                            />
+                            <textarea
+                                className="note-body-input"
+                                value={activeNote.body}
+                                onChange={event => updateActiveNote({ body: event.target.value })}
+                                placeholder="Мысль, план, ссылка, кусок промпта..."
+                            />
+                        </div>
+                        <div className="note-task-panel">
+                            <div className="note-task-heading">
+                                <div>
+                                    <strong>Задачи</strong>
+                                    <span>{completedTasks}/{activeNote.tasks.length} выполнено</span>
+                                </div>
+                                <CheckSquare2 size={16} />
+                            </div>
+                            <form
+                                className="note-task-form"
+                                onSubmit={event => {
+                                    event.preventDefault();
+                                    addTask();
+                                }}
+                            >
+                                <input
+                                    value={taskDraft}
+                                    onChange={event => setTaskDraft(event.target.value)}
+                                    placeholder="Добавить задачу"
+                                />
+                                <button type="submit" title="Добавить"><Plus size={14} /></button>
+                            </form>
+                            <div className="note-task-list">
+                                {activeNote.tasks.length === 0 ? (
+                                    <div className="note-task-empty">Задач пока нет</div>
+                                ) : activeNote.tasks.map(task => (
+                                    <div className={`note-task-row ${task.done ? 'done' : ''}`} key={task.id}>
+                                        <input
+                                            type="checkbox"
+                                            checked={task.done}
+                                            onChange={event => updateTask(task.id, { done: event.target.checked })}
+                                            aria-label="Готово"
+                                        />
+                                        <input
+                                            type="text"
+                                            value={task.text}
+                                            onChange={event => updateTask(task.id, { text: event.target.value })}
+                                            aria-label="Текст задачи"
+                                        />
+                                        <select
+                                            value={task.priority}
+                                            onChange={event => updateTask(task.id, { priority: event.target.value as NoteTask['priority'] })}
+                                            aria-label="Приоритет"
+                                        >
+                                            <option value="low">Низкий</option>
+                                            <option value="normal">Обычный</option>
+                                            <option value="high">Высокий</option>
+                                        </select>
+                                        <button type="button" onClick={() => removeTask(task.id)} title="Удалить задачу">
+                                            <X size={12} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        <div className={`note-canvas-panel ${canvasExpanded ? 'expanded' : ''}`}>
+                            <div className="note-canvas-toolbar">
+                                <div className="note-canvas-tools">
+                                    <button
+                                        type="button"
+                                        className={drawMode === 'draw' ? 'active' : ''}
+                                        onClick={() => setDrawMode('draw')}
+                                        title="Карандаш"
+                                    >
+                                        <Pencil size={14} />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className={drawMode === 'erase' ? 'active' : ''}
+                                        onClick={() => setDrawMode('erase')}
+                                        title="Ластик"
+                                    >
+                                        <Eraser size={14} />
+                                    </button>
+                                </div>
+                                <div className="note-color-row">
+                                    {NOTE_BRUSH_COLORS.map(color => (
+                                        <button
+                                            type="button"
+                                            key={color}
+                                            className={brushColor === color ? 'active' : ''}
+                                            style={{ background: color }}
+                                            onClick={() => setBrushColor(color)}
+                                            title={color}
+                                        />
+                                    ))}
+                                </div>
+                                <input
+                                    type="range"
+                                    min="2"
+                                    max="18"
+                                    value={brushSize}
+                                    onChange={event => setBrushSize(Number(event.target.value))}
+                                    aria-label="Размер кисти"
+                                />
+                                <span className="note-canvas-zoom">{Math.round(canvasZoom * 100)}%</span>
+                                <button type="button" className="note-clear-canvas" onClick={clearCanvas}>Очистить</button>
+                                <button
+                                    type="button"
+                                    className="note-expand-canvas"
+                                    onClick={() => setCanvasExpanded(value => !value)}
+                                    title={canvasExpanded ? 'Свернуть холст' : 'Расширить холст'}
+                                >
+                                    {canvasExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                                </button>
+                            </div>
+                            <div
+                                ref={canvasStageRef}
+                                className="note-canvas-stage"
+                                onWheel={event => {
+                                    if (!event.ctrlKey) return;
+                                    event.preventDefault();
+                                    const direction = event.deltaY > 0 ? -0.1 : 0.1;
+                                    setCanvasZoom(value => Math.max(
+                                        NOTE_CANVAS_MIN_ZOOM,
+                                        Math.min(NOTE_CANVAS_MAX_ZOOM, Number((value + direction).toFixed(2))),
+                                    ));
+                                }}
+                            >
+                                <canvas
+                                    ref={canvasRef}
+                                    className="note-canvas"
+                                    onPointerDown={event => {
+                                        drawingRef.current = true;
+                                        event.currentTarget.setPointerCapture(event.pointerId);
+                                        const point = getCanvasPoint(event);
+                                        lastPointRef.current = point;
+                                        drawPoint(point);
+                                    }}
+                                    onPointerMove={event => {
+                                        if (!drawingRef.current) return;
+                                        drawToPoint(getCanvasPoint(event));
+                                    }}
+                                    onPointerUp={event => {
+                                        drawingRef.current = false;
+                                        lastPointRef.current = null;
+                                        event.currentTarget.releasePointerCapture(event.pointerId);
+                                        persistCanvas();
+                                    }}
+                                    onPointerCancel={() => {
+                                        drawingRef.current = false;
+                                        lastPointRef.current = null;
+                                        persistCanvas();
+                                    }}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </section>
+    );
+}
+
 function ProjectsView({ onClose }: { onClose: () => void }) {
     const [projects, setProjects] = useState<ProjectEntry[]>([]);
     const [loading, setLoading] = useState(true);
@@ -2209,17 +3022,11 @@ function ProjectsView({ onClose }: { onClose: () => void }) {
 
     return (
         <section className="projects-view no-drag-region">
-            <div className="projects-header">
-                <div>
-                    <h2>Проекты</h2>
-                    <span>Созданные презентации</span>
-                </div>
-                <div className="projects-header-actions">
-                    <button type="button" onClick={refresh} title="Обновить"><RefreshCw size={15} /></button>
-                    <button type="button" onClick={onClose} title="Закрыть"><X size={16} /></button>
-                </div>
-            </div>
             {error && <div className="workspace-panel-error">{error}</div>}
+            <div className="projects-inline-actions">
+                <button type="button" onClick={refresh} title="Обновить"><RefreshCw size={15} /></button>
+                <button type="button" onClick={onClose} title="Закрыть"><X size={16} /></button>
+            </div>
             {loading ? (
                 <div className="projects-empty">Загрузка проектов...</div>
             ) : projects.length === 0 ? (
@@ -2358,12 +3165,13 @@ function ChatView({
     const [workspacePanelMode, setWorkspacePanelMode] = useState<WorkspacePanelMode>('files');
     const [projectsOpen, setProjectsOpen] = useState(false);
     const [skillsOpen, setSkillsOpen] = useState(false);
+    const [notesOpen, setNotesOpen] = useState(false);
     const [input, setInput] = useState('');
     const [status, setStatus] = useState('listening');
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isConnected, setIsConnected] = useState(false);
     const [isAgentReady, setIsAgentReady] = useState(false);
-    const [isBackendStarting, setIsBackendStarting] = useState(true);
+    const [, setIsBackendStarting] = useState(true);
     const [isMaximized, setIsMaximized] = useState(false);
     const [logsOpen, setLogsOpen] = useState(false);
     const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -2372,8 +3180,12 @@ function ChatView({
         version: '1.1.1',
         model_name: localStorage.getItem(RUNTIME_MODEL_STORAGE_KEY) || 'Загрузка модели...',
     }));
+    const [llamaUpdate, setLlamaUpdate] = useState<LlamaUpdateInfo | null>(null);
+    const [llamaUpdating, setLlamaUpdating] = useState(false);
     const [isDraggingFile, setIsDraggingFile] = useState(false);
     const [activityLabel, setActivityLabel] = useState<string | null>(null);
+    const [previewImage, setPreviewImage] = useState<{ src: string; alt?: string } | null>(null);
+    const [imageContextMenu, setImageContextMenu] = useState<{ x: number; y: number; src: string } | null>(null);
 
     useEffect(() => {
         if (!ipcRenderer) return;
@@ -2410,6 +3222,7 @@ function ChatView({
     const logsEndRef = useRef<HTMLDivElement | null>(null);
     const dragDepthRef = useRef(0);
     const agentReadyRef = useRef(false);
+    const llamaUpdateNotifiedRef = useRef(false);
 
     useEffect(() => {
         return () => {
@@ -2445,6 +3258,40 @@ function ChatView({
     useEffect(() => {
         if (!isConnected) return;
         let cancelled = false;
+
+        const checkLlamaUpdate = async () => {
+            try {
+                const response = await veraFetch('http://127.0.0.1:8000/api/llama-update');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data: LlamaUpdateInfo = await response.json();
+                if (cancelled) return;
+                setLlamaUpdate(data);
+                if (data.update_available && !llamaUpdateNotifiedRef.current) {
+                    llamaUpdateNotifiedRef.current = true;
+                    const current = data.current?.build ? `b${data.current.build}` : 'текущая сборка';
+                    const latest = data.latest?.tag || (data.latest?.build ? `b${data.latest.build}` : 'новая сборка');
+                    appendLog(`Доступно обновление llama.cpp: ${current} -> ${latest}`, 'info');
+                }
+            } catch (error: any) {
+                if (!cancelled) {
+                    setLlamaUpdate({
+                        status: 'error',
+                        update_available: false,
+                        error: error?.message || String(error),
+                    });
+                }
+            }
+        };
+
+        checkLlamaUpdate();
+        return () => {
+            cancelled = true;
+        };
+    }, [appendLog, isConnected]);
+
+    useEffect(() => {
+        if (!isConnected) return;
+        let cancelled = false;
         let retryTimer: number | null = null;
         let attempt = 0;
         const retryDelays = [0, 500, 1500, 3000, 6000, 10000];
@@ -2464,6 +3311,7 @@ function ChatView({
                     version: String(data.version || '1.1.1'),
                     model_name: modelName,
                     model_path: typeof data.model_path === 'string' ? data.model_path : undefined,
+                    llama_cpp: data.llama_cpp,
                 });
             } catch {
                 attempt += 1;
@@ -2600,6 +3448,7 @@ function ChatView({
     const selectSession = useCallback(async (sessionId: string) => {
         setProjectsOpen(false);
         setSkillsOpen(false);
+        setNotesOpen(false);
         ignoreLateChunksRef.current = true;
         pendingChunksRef.current = [];
         if (chunkFlushRafRef.current != null) {
@@ -2625,6 +3474,7 @@ function ChatView({
     const startNewSession = useCallback(async () => {
         setProjectsOpen(false);
         setSkillsOpen(false);
+        setNotesOpen(false);
         const created = await createSession(veraFetch);
         activeSessionIdRef.current = created.id;
         setActiveSessionId(created.id);
@@ -2636,10 +3486,27 @@ function ChatView({
         return created;
     }, []);
 
+    const openImageContextMenu = useCallback((event: React.MouseEvent, src: string) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setImageContextMenu({
+            x: Math.min(event.clientX, window.innerWidth - 170),
+            y: Math.min(event.clientY, window.innerHeight - 60),
+            src,
+        });
+    }, []);
+
+    const handleImageOpen = useCallback((src: string, alt?: string) => {
+        setPreviewImage({ src, alt });
+    }, []);
+
     const reconcileActiveSession = useCallback(async () => {
         const items = await refreshSessions();
         const currentId = activeSessionIdRef.current;
         if (currentId && items.some(item => item.id === currentId)) {
+            return;
+        }
+        if (currentId && await getSession(veraFetch, currentId)) {
             return;
         }
 
@@ -2653,9 +3520,14 @@ function ChatView({
         if (items[0]) {
             await selectSession(items[0].id);
         } else {
-            await startNewSession();
+            activeSessionIdRef.current = null;
+            setActiveSessionId(null);
+            setMessages([]);
+            setInput('');
+            setAttachedFile(null);
+            setRenderWindow(120);
         }
-    }, [refreshSessions, selectSession, startNewSession]);
+    }, [refreshSessions, selectSession]);
 
     useEffect(() => {
         const onPaste = (event: ClipboardEvent) => {
@@ -2704,17 +3576,21 @@ function ChatView({
                     : null;
                 if (preferred) {
                     await selectSession(preferred.id);
+                } else if (preferredSessionId && await getSession(veraFetch, preferredSessionId)) {
+                    await selectSession(preferredSessionId);
                 } else if (items.length > 0) {
                     await selectSession(items[0].id);
                 } else {
-                    await startNewSession();
+                    activeSessionIdRef.current = null;
+                    setActiveSessionId(null);
+                    setMessages([]);
                 }
             })
             .catch(error => {
                 sessionsInitializedRef.current = false;
                 console.error('Не удалось загрузить сессии', error);
             });
-    }, [pushSystemMessage, refreshSessions, selectSession, startNewSession]);
+    }, [pushSystemMessage, refreshSessions, selectSession]);
 
     useEffect(() => {
         const onStorage = (event: StorageEvent) => {
@@ -2783,6 +3659,69 @@ function ChatView({
         () => visibleMessages.some(message => message.role === 'assistant' && message.streaming),
         [visibleMessages],
     );
+    const installLlamaUpdate = useCallback(async () => {
+        if (!llamaUpdate?.update_available || llamaUpdating) return;
+        const latest = llamaUpdate.latest?.tag || (llamaUpdate.latest?.build ? `b${llamaUpdate.latest.build}` : 'новая сборка');
+        const confirmed = window.confirm(
+            `Обновить llama.cpp до ${latest}? Агент перезапустится после установки.`,
+        );
+        if (!confirmed) return;
+
+        setLlamaUpdating(true);
+        appendLog(`Обновляю llama.cpp до ${latest}`, 'info');
+        pushSystemMessage(`Обновляю llama.cpp до ${latest}. Это может занять пару минут.`);
+        try {
+            const latestResponse = await veraFetch('http://127.0.0.1:8000/api/llama-update?force=true');
+            if (latestResponse.ok) {
+                const latestData: LlamaUpdateInfo = await latestResponse.json();
+                setLlamaUpdate(latestData);
+                if (!latestData.update_available) {
+                    appendLog('llama.cpp уже актуален', 'success');
+                    pushSystemMessage('llama.cpp уже актуален.');
+                    return;
+                }
+            }
+            const response = await veraFetch('http://127.0.0.1:8000/api/llama-update/install', {
+                method: 'POST',
+            });
+            const data: LlamaUpdateInfo = await response.json().catch(() => ({
+                status: 'error',
+                update_available: true,
+                error: `HTTP ${response.status}`,
+            }));
+            if (!response.ok || data.status === 'error') {
+                const hint = response.status === 404
+                    ? 'Endpoint обновления не найден. Перезапустите Vera, чтобы backend подхватил новую версию кода.'
+                    : data.error || `HTTP ${response.status}`;
+                throw new Error(hint);
+            }
+            if (data.status === 'busy') {
+                throw new Error(data.error || 'Обновление уже выполняется.');
+            }
+            if (!data.installed && data.update_available === false) {
+                appendLog('llama.cpp уже актуален', 'success');
+                setLlamaUpdate(data);
+                return;
+            }
+            setLlamaUpdate(data);
+            appendLog('llama.cpp обновлён, перезапускаю агента', 'success');
+            pushSystemMessage('llama.cpp обновлён. Перезапускаю агента...');
+            window.setTimeout(() => {
+                if (ipcRenderer) {
+                    ipcRenderer.send('restart-app');
+                } else {
+                    window.location.reload();
+                }
+            }, 700);
+        } catch (error: any) {
+            const message = error?.message || String(error);
+            appendLog('Не удалось обновить llama.cpp', 'error', message);
+            pushSystemMessage(`Не удалось обновить llama.cpp: ${message}`);
+            window.alert(`Не удалось обновить llama.cpp:\n${message}`);
+        } finally {
+            setLlamaUpdating(false);
+        }
+    }, [appendLog, llamaUpdate, llamaUpdating, pushSystemMessage]);
     const flushChunkBatch = useCallback(() => {
         chunkFlushRafRef.current = null;
         const batch = pendingChunksRef.current;
@@ -2798,7 +3737,13 @@ function ChatView({
                     if (chunk.type === 'thought_chunk') {
                         updated.thoughts = (updated.thoughts || '') + String(chunk.text || '');
                     } else {
-                        updated.text += String(chunk.text || '');
+                        const textChunk = String(chunk.text || '');
+                        updated.text += textChunk;
+                        updated.streamChars = (updated.streamChars || 0) + textChunk.length;
+                        const startedAt = updated.streamStartedAt || Date.now();
+                        updated.streamStartedAt = startedAt;
+                        const elapsedSec = Math.max(0.2, (Date.now() - startedAt) / 1000);
+                        updated.tokensPerSecond = Math.max(0.1, (updated.streamChars / 4) / elapsedSec);
                     }
                     next = [...next.slice(0, streamIdx), updated, ...next.slice(streamIdx + 1)];
                 } else {
@@ -2809,6 +3754,11 @@ function ChatView({
                             text: chunk.type === 'thought_chunk' ? '' : String(chunk.text || ''),
                             thoughts: chunk.type === 'thought_chunk' ? String(chunk.text || '') : '',
                             streaming: true,
+                            streamStartedAt: Date.now(),
+                            streamChars: chunk.type === 'thought_chunk' ? 0 : String(chunk.text || '').length,
+                            tokensPerSecond: chunk.type === 'thought_chunk'
+                                ? undefined
+                                : Math.max(0.1, (String(chunk.text || '').length / 4) / 0.2),
                         },
                     ];
                 }
@@ -2911,6 +3861,7 @@ function ChatView({
                                     version: String(data.version || '1.1.1'),
                                     model_name: modelName,
                                     model_path: typeof data.model_path === 'string' ? data.model_path : undefined,
+                                    llama_cpp: data.llama_cpp,
                                 });
                             }
                             return;
@@ -2968,7 +3919,18 @@ function ChatView({
                                     const streamIdx = findLastStreamingAssistantIndex(prev);
                                     if (streamIdx !== -1) {
                                         const streamMsg = prev[streamIdx];
-                                        const finalized = { ...streamMsg, text: data.text, streaming: false };
+                                        const elapsedSec = streamMsg.streamStartedAt
+                                            ? Math.max(0.2, (Date.now() - streamMsg.streamStartedAt) / 1000)
+                                            : 0;
+                                        const chars = String(data.text || streamMsg.text || '').length;
+                                        const speed = elapsedSec > 0 ? Math.max(0.1, (chars / 4) / elapsedSec) : streamMsg.tokensPerSecond;
+                                        const finalized = {
+                                            ...streamMsg,
+                                            text: data.text,
+                                            streaming: false,
+                                            streamChars: chars,
+                                            tokensPerSecond: speed,
+                                        };
                                         const withoutStream = [...prev.slice(0, streamIdx), ...prev.slice(streamIdx + 1)];
                                         return [...withoutStream, finalized];
                                     }
@@ -3206,6 +4168,15 @@ function ChatView({
                     initialSection={settingsInitialSection}
                 />
             </AnimatePresence>
+            <ImagePreviewOverlay
+                image={previewImage}
+                onClose={() => setPreviewImage(null)}
+                onImageContextMenu={openImageContextMenu}
+            />
+            <ImageContextMenu
+                menu={imageContextMenu}
+                onClose={() => setImageContextMenu(null)}
+            />
 
             <div className="vera-workspace-layout">
             {sessionsPanelOpen && (
@@ -3213,17 +4184,25 @@ function ChatView({
                     veraFetch={veraFetch}
                     onSkills={() => {
                         setProjectsOpen(false);
+                        setNotesOpen(false);
                         setSkillsOpen(true);
                     }}
                     onProjects={() => {
                         setSkillsOpen(false);
+                        setNotesOpen(false);
                         setProjectsOpen(true);
+                    }}
+                    onNotes={() => {
+                        setSkillsOpen(false);
+                        setProjectsOpen(false);
+                        setNotesOpen(true);
                     }}
                     onSessionOpen={() => {
                         setProjectsOpen(false);
                         setSkillsOpen(false);
+                        setNotesOpen(false);
                     }}
-                    activeSection={skillsOpen ? 'skills' : projectsOpen ? 'projects' : null}
+                    activeSection={skillsOpen ? 'skills' : projectsOpen ? 'projects' : notesOpen ? 'notes' : null}
                 />
             )}
             <main
@@ -3258,7 +4237,9 @@ function ChatView({
                 >
                     <PanelRight size={18} />
                 </button>
-                <div />
+                <div className="vera-workspace-brand">
+                    <strong>Vera</strong>
+                </div>
                 <div className="vera-workspace-window-actions no-drag-region">
                     <button
                         onClick={() => setWorkspacePanelOpen(value => !value)}
@@ -3284,7 +4265,7 @@ function ChatView({
                 </div>
             </div>
             <AnimatePresence>
-                {(!isAgentReady || isBackendStarting) && (
+                {!isAgentReady && (
                     <motion.div
                         key="agent-connection"
                         className="agent-connection-overlay no-drag-region"
@@ -3304,6 +4285,7 @@ function ChatView({
             </AnimatePresence>
             {projectsOpen && <ProjectsView onClose={() => setProjectsOpen(false)} />}
             {skillsOpen && <SkillsView onClose={() => setSkillsOpen(false)} />}
+            {notesOpen && <NotesView />}
             {/* РЎРѕРѕР±С‰РµРЅРёСЏ */}
             <div className="vera-workspace-messages no-drag-region">
                 {messages.length === 0 && (
@@ -3327,16 +4309,17 @@ function ChatView({
                 <AnimatePresence initial={false}>
                     {visibleMessages.map((msg, idx) => {
                         const absoluteIdx = messages.length - visibleMessages.length + idx;
+                        const rowId = `${absoluteIdx}-${msg.role}`;
                         return (
-                            <motion.div
-                                key={`${absoluteIdx}-${msg.role}`}
-                                initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ duration: reduceMotion ? 0.12 : 0.2 }}
-                                className={`vera-workspace-message-row flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                            >
-                                <MessageBubble msg={msg} isLightMode={isLightMode} />
-                            </motion.div>
+                            <MessageRow
+                                key={rowId}
+                                rowId={rowId}
+                                msg={msg}
+                                isLightMode={isLightMode}
+                                reduceMotion={reduceMotion}
+                                onImageOpen={handleImageOpen}
+                                onImageContextMenu={openImageContextMenu}
+                            />
                         );
                     })}
                     {status === 'thinking' && (!hasActiveStreamingMessage || activityLabel) && (
@@ -3351,6 +4334,7 @@ function ChatView({
             </div>
 
             {/* РџР°РЅРµР»СЊ РІРІРѕРґР° */}
+            {isAgentReady && (
             <div className="vera-workspace-composer-wrap">
                 <AnimatePresence initial={false}>
                     {logsOpen && (
@@ -3423,7 +4407,7 @@ function ChatView({
                     className="hidden"
                 />
 
-                <form onSubmit={handleSend} className={`vera-workspace-composer ${!isConnected || !isAgentReady ? 'is-disconnected' : ''}`}>
+                <form onSubmit={handleSend} className="vera-workspace-composer">
                     <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
@@ -3446,7 +4430,6 @@ function ChatView({
                         onChange={(e) => setInput(e.target.value)}
                         placeholder={attachedFile ? "Спросите о прикреплённом файле..." : "Написать сообщение..."}
                         className="vera-workspace-composer-input"
-                        disabled={!isAgentReady}
                     />
                     <button
                         type="button"
@@ -3459,6 +4442,7 @@ function ChatView({
                     </button>
                 </form>
             </div>
+            )}
             <div className="vera-workspace-statusbar no-drag-region">
                 <button
                     type="button"
@@ -3475,6 +4459,20 @@ function ChatView({
                 <span className="vera-workspace-runtime-model" title={runtimeInfo.model_path}>
                     {runtimeInfo.model_name}
                 </span>
+                {llamaUpdate?.update_available && (
+                    <button
+                        type="button"
+                        className={`vera-workspace-update-badge ${llamaUpdating ? 'is-updating' : ''}`}
+                        onClick={installLlamaUpdate}
+                        disabled={llamaUpdating}
+                        title={llamaUpdating
+                            ? 'Обновление llama.cpp устанавливается'
+                            : `Обновить llama.cpp: b${llamaUpdate.current?.build ?? '?'} -> ${llamaUpdate.latest?.tag || `b${llamaUpdate.latest?.build ?? '?'}`}`}
+                    >
+                        <RefreshCw size={11} />
+                        <span>{llamaUpdating ? 'Обновляю' : (llamaUpdate.latest?.tag || 'llama.cpp')}</span>
+                    </button>
+                )}
                 <span className="vera-workspace-runtime-version">v{runtimeInfo.version}</span>
                 <button
                     type="button"

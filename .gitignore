@@ -20,6 +20,8 @@ ggml*.dll
 ggml.dll
 mtmd.dll
 libomp*.dll
+llama-*-impl.dll
+runtime_backups/
 
 # Sherpa-ONNX models
 sherpa-onnx-*/

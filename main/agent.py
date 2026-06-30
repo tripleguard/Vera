@@ -1456,20 +1456,9 @@ def ask_llm(
     with _thinking_lock:
         thinking_enabled = _thinking_enabled
         thinking_budget_tokens = _thinking_budget_tokens
-    if thinking_enabled and thinking_budget_tokens > 0:
-        system_content += (
-            f"\n\nУ тебя есть не более {thinking_budget_tokens} токенов на внутреннее "
-            "рассуждение. Не повторяй условия и правила. Заранее подведи анализ "
-            "к завершению и оставь достаточно времени для ясного финального ответа."
-        )
-        messages[0]["content"] = system_content
-        if "max_tokens" in gen_args:
-            gen_args["max_tokens"] = max(
-                int(gen_args["max_tokens"]),
-                thinking_budget_tokens + 256,
-            )
-    gen_args["chat_template_kwargs"] = {"enable_thinking": bool(thinking_enabled)}
-    gen_args["thinking_budget_tokens"] = thinking_budget_tokens if thinking_enabled else 0
+    thinking_active = bool(thinking_enabled and thinking_budget_tokens > 0)
+    gen_args["chat_template_kwargs"] = {"enable_thinking": thinking_active}
+    gen_args["thinking_budget_tokens"] = thinking_budget_tokens if thinking_active else 0
 
     effective_allow_tools = allow_tools and not image_data_url and not (intent and intent.plain_code)
     if effective_allow_tools:

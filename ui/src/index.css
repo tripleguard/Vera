@@ -307,30 +307,12 @@ body {
         linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 248, 251, 0.98));
 }
 
-.chat-empty-orb {
-    position: absolute;
-    left: 18%;
-    top: 46%;
-    width: 18px;
-    height: 18px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--vera-accent) 72%, white);
-    box-shadow: 0 0 0 6px color-mix(in srgb, var(--vera-accent) 10%, transparent), 0 0 32px color-mix(in srgb, var(--vera-accent) 28%, transparent);
-}
-
 .chat-empty-copy {
     position: relative;
     z-index: 1;
     max-width: 680px;
     padding: 2rem;
     text-align: center;
-}
-
-.chat-empty-kicker {
-    color: var(--vera-muted);
-    font-size: 0.84rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
 }
 
 .chat-empty-copy h1 {
@@ -355,20 +337,6 @@ body {
     line-height: 1.7;
 }
 
-.session-sidebar-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1rem 0.9rem 0.75rem;
-}
-
-.session-sidebar-header h2 {
-    margin: 0.08rem 0 0;
-    font-size: 0.96rem;
-    font-weight: 650;
-}
-
-.session-sidebar-eyebrow,
 .session-section-label {
     color: var(--vera-faint);
     font-size: 0.64rem;
@@ -634,6 +602,13 @@ body {
     gap: 10px;
 }
 
+.user-message-image-button {
+    display: block;
+    max-width: min(320px, 48vw);
+    border-radius: 14px;
+    cursor: pointer;
+}
+
 .user-message-image {
     display: block;
     width: auto;
@@ -700,6 +675,94 @@ body {
 .message-bubble.role-system {
     background: color-mix(in srgb, var(--vera-accent) 8%, transparent) !important;
     color: var(--vera-muted) !important;
+}
+
+.assistant-speed-meter {
+    margin-top: 8px;
+    color: var(--vera-workspace-subtle);
+    font-size: 10px;
+    line-height: 1;
+    text-align: right;
+    user-select: none;
+}
+
+.image-preview-overlay {
+    position: absolute;
+    z-index: 60;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(4, 8, 14, 0.82);
+    backdrop-filter: blur(10px);
+}
+
+.image-preview-overlay img {
+    max-width: min(92vw, 1180px);
+    max-height: 86vh;
+    border: 1px solid color-mix(in srgb, var(--vera-workspace-line) 80%, transparent);
+    border-radius: 10px;
+    object-fit: contain;
+    box-shadow: 0 26px 80px rgba(0, 0, 0, 0.45);
+}
+
+.image-preview-close,
+.image-preview-copy {
+    position: absolute;
+    z-index: 61;
+    border: 1px solid color-mix(in srgb, var(--vera-workspace-line) 80%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-workspace-panel-soft) 92%, transparent);
+    color: var(--vera-workspace-text);
+}
+
+.image-preview-close {
+    top: 16px;
+    right: 16px;
+    display: inline-flex;
+    width: 34px;
+    height: 34px;
+    align-items: center;
+    justify-content: center;
+}
+
+.image-preview-copy {
+    right: 58px;
+    bottom: 18px;
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+.image-preview-close:hover,
+.image-preview-copy:hover {
+    border-color: var(--vera-workspace-accent);
+    color: var(--vera-workspace-accent);
+}
+
+.image-context-menu {
+    position: fixed;
+    z-index: 70;
+    min-width: 150px;
+    border: 1px solid color-mix(in srgb, var(--vera-workspace-line) 78%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vera-workspace-panel-soft) 96%, #05070a);
+    padding: 6px;
+    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.34);
+}
+
+.image-context-menu button {
+    display: block;
+    width: 100%;
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--vera-workspace-text);
+    font-size: 12px;
+    text-align: left;
+}
+
+.image-context-menu button:hover {
+    background: var(--vera-workspace-hover);
+    color: var(--vera-workspace-accent);
 }
 
 .source-chip-wrap {
@@ -1517,10 +1580,6 @@ body {
     background: rgba(255, 255, 255, 0.96);
 }
 
-.attachment-card-inline {
-    box-shadow: none;
-}
-
 .attachment-icon {
     display: inline-flex;
     width: 1.8rem;
@@ -1850,13 +1909,14 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
 .agent-connection-overlay {
     position: absolute;
     z-index: 70;
-    inset: 40px 0 0;
+    inset: 40px 0 22px;
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--vera-workspace-main-bg);
     color: var(--vera-workspace-title);
     opacity: 1;
+    pointer-events: none;
     visibility: visible;
 }
 
@@ -1909,6 +1969,31 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
 .vera-shell .vera-workspace-topbar {
     border-color: var(--vera-workspace-line);
     background: var(--vera-workspace-main-bg);
+}
+
+.vera-workspace-brand {
+    display: inline-flex;
+    min-width: 0;
+    align-items: baseline;
+    justify-content: center;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.vera-workspace-brand strong {
+    color: var(--vera-workspace-title);
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.vera-workspace-brand span {
+    overflow: hidden;
+    color: var(--vera-workspace-subtle);
+    font-size: 10px;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
 }
 
 .vera-workspace-icon-button {
@@ -2199,7 +2284,8 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
 }
 
 .projects-view,
-.skills-view {
+.skills-view,
+.notes-view {
     position: absolute;
     z-index: 12;
     inset: 40px 0 20px;
@@ -2209,7 +2295,6 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
     background: var(--vera-workspace-main-bg);
 }
 
-.projects-header,
 .skills-header {
     display: flex;
     align-items: center;
@@ -2219,26 +2304,22 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
     border-bottom: 1px solid var(--vera-workspace-line);
 }
 
-.projects-header h2,
 .skills-header h2 {
     margin: 0;
     color: var(--vera-workspace-title);
     font-size: 20px;
 }
 
-.projects-header span,
 .skills-header span {
     color: var(--vera-workspace-subtle);
     font-size: 11px;
 }
 
-.projects-header-actions,
 .skills-header-actions {
     display: flex;
     gap: 5px;
 }
 
-.projects-header-actions button,
 .skills-header-actions button {
     display: inline-flex;
     width: 30px;
@@ -2249,10 +2330,412 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
     color: var(--vera-workspace-subtle);
 }
 
-.projects-header-actions button:hover,
 .skills-header-actions button:hover {
     background: var(--vera-workspace-hover);
     color: var(--vera-workspace-accent);
+}
+
+.projects-inline-actions {
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    z-index: 2;
+    display: flex;
+    gap: 5px;
+}
+
+.projects-inline-actions button {
+    display: inline-flex;
+    width: 30px;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    color: var(--vera-workspace-subtle);
+}
+
+.projects-inline-actions button:hover {
+    background: var(--vera-workspace-hover);
+    color: var(--vera-workspace-accent);
+}
+
+.notes-shell {
+    display: grid;
+    min-height: 0;
+    flex: 1;
+    grid-template-columns: 250px minmax(0, 1fr);
+}
+
+.notes-list {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+    border-right: 1px solid var(--vera-workspace-line);
+    padding: 14px;
+    background: color-mix(in srgb, var(--vera-workspace-sidebar-bg) 88%, var(--vera-workspace-main-bg));
+}
+
+.notes-list-add {
+    display: inline-flex;
+    min-height: 36px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px dashed var(--vera-workspace-line);
+    border-radius: 8px;
+    color: var(--vera-workspace-subtle);
+    font-size: 11px;
+}
+
+.notes-list-add:hover {
+    border-color: color-mix(in srgb, var(--vera-workspace-accent) 48%, var(--vera-workspace-line));
+    color: var(--vera-workspace-accent);
+}
+
+.note-list-item {
+    display: grid;
+    min-height: 58px;
+    grid-template-columns: minmax(0, 1fr) 28px;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 6px;
+    color: var(--vera-workspace-text);
+}
+
+.note-list-item:hover {
+    background: var(--vera-workspace-hover);
+}
+
+.note-list-item.active {
+    border-color: color-mix(in srgb, var(--vera-workspace-accent) 42%, var(--vera-workspace-line));
+    background: var(--vera-workspace-active);
+}
+
+.note-list-item > button:first-child {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    text-align: left;
+}
+
+.note-list-item span {
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.note-list-item small {
+    color: var(--vera-workspace-subtle);
+    font-size: 9px;
+}
+
+.note-list-delete {
+    display: inline-flex;
+    width: 26px;
+    height: 26px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    color: var(--vera-workspace-subtle);
+}
+
+.note-list-delete:hover {
+    background: color-mix(in srgb, #ef4444 12%, transparent);
+    color: #ff8f8f;
+}
+
+.note-editor {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    grid-template-columns: minmax(260px, 1fr) minmax(280px, 0.72fr);
+    grid-template-rows: minmax(170px, 0.65fr) minmax(230px, 1fr);
+    gap: 12px;
+    overflow: hidden;
+    padding: 16px;
+}
+
+.note-editor-main,
+.note-task-panel,
+.note-canvas-panel {
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--vera-workspace-line);
+    border-radius: 8px;
+    background: var(--vera-workspace-panel-soft);
+}
+
+.note-editor-main {
+    display: flex;
+    flex-direction: column;
+    grid-row: 1 / 3;
+}
+
+.note-title-input,
+.note-body-input,
+.note-task-form input,
+.note-task-row input[type="text"],
+.note-task-row select {
+    width: 100%;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--vera-workspace-text);
+}
+
+.note-title-input {
+    flex: 0 0 auto;
+    border-bottom: 1px solid var(--vera-workspace-line);
+    padding: 14px 16px;
+    color: var(--vera-workspace-title);
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.note-body-input {
+    flex: 1;
+    min-height: 0;
+    resize: none;
+    padding: 16px;
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.note-title-input::placeholder,
+.note-body-input::placeholder,
+.note-task-form input::placeholder {
+    color: var(--vera-workspace-subtle);
+}
+
+.note-task-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.note-task-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--vera-workspace-line);
+    padding: 12px 13px;
+    color: var(--vera-workspace-accent);
+}
+
+.note-task-heading > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.note-task-heading strong {
+    color: var(--vera-workspace-title);
+    font-size: 13px;
+}
+
+.note-task-heading span,
+.note-task-empty {
+    color: var(--vera-workspace-subtle);
+    font-size: 10px;
+}
+
+.note-task-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 32px;
+    gap: 6px;
+    padding: 10px 12px;
+}
+
+.note-task-form input {
+    border: 1px solid var(--vera-workspace-line);
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-size: 11px;
+}
+
+.note-task-form button,
+.note-task-row button,
+.note-canvas-tools button,
+.note-clear-canvas {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--vera-workspace-line);
+    border-radius: 6px;
+    color: var(--vera-workspace-subtle);
+}
+
+.note-task-form button:hover,
+.note-canvas-tools button:hover,
+.note-canvas-tools button.active,
+.note-clear-canvas:hover {
+    border-color: color-mix(in srgb, var(--vera-workspace-accent) 48%, var(--vera-workspace-line));
+    color: var(--vera-workspace-accent);
+}
+
+.note-task-row button:hover {
+    border-color: rgba(239, 68, 68, 0.62);
+    background: color-mix(in srgb, #ef4444 12%, transparent);
+    color: #ff8f8f;
+}
+
+.note-task-list {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 7px;
+    overflow-y: auto;
+    padding: 0 12px 12px;
+}
+
+.note-task-empty {
+    display: flex;
+    min-height: 50px;
+    align-items: center;
+    justify-content: center;
+}
+
+.note-task-row {
+    display: grid;
+    grid-template-columns: 18px minmax(92px, 1fr) 72px 28px;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--vera-workspace-line);
+    border-radius: 7px;
+    padding: 6px;
+}
+
+.note-task-row.done {
+    opacity: 0.58;
+}
+
+.note-task-row.done input[type="text"] {
+    text-decoration: line-through;
+}
+
+.note-task-row input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--vera-workspace-accent);
+}
+
+.note-task-row input[type="text"],
+.note-task-row select {
+    min-width: 0;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--vera-workspace-main-bg) 58%, transparent);
+    padding: 4px 6px;
+    font-size: 10px;
+}
+
+.note-task-row select {
+    border-left: 1px solid var(--vera-workspace-line);
+    padding-left: 6px;
+    color-scheme: dark;
+}
+
+.note-canvas-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.note-canvas-panel.expanded {
+    position: absolute;
+    z-index: 18;
+    inset: 16px;
+    box-shadow: var(--vera-workspace-shadow);
+}
+
+.note-canvas-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--vera-workspace-line);
+    padding: 9px 10px;
+}
+
+.note-canvas-tools {
+    display: flex;
+    gap: 5px;
+}
+
+.note-canvas-tools button {
+    width: 30px;
+    height: 28px;
+}
+
+.note-color-row {
+    display: flex;
+    gap: 5px;
+}
+
+.note-color-row button {
+    width: 18px;
+    height: 18px;
+    border: 2px solid color-mix(in srgb, var(--vera-workspace-line) 70%, transparent);
+    border-radius: 999px;
+}
+
+.note-color-row button.active {
+    border-color: var(--vera-workspace-title);
+}
+
+.note-canvas-toolbar input[type="range"] {
+    width: 88px;
+    accent-color: var(--vera-workspace-accent);
+}
+
+.note-clear-canvas,
+.note-expand-canvas {
+    min-height: 28px;
+    padding: 0 8px;
+    font-size: 10px;
+}
+
+.note-expand-canvas {
+    width: 30px;
+    padding: 0;
+}
+
+.note-canvas-zoom {
+    min-width: 38px;
+    color: var(--vera-workspace-subtle);
+    font-size: 10px;
+    text-align: center;
+}
+
+.note-canvas-stage {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #ffffff;
+}
+
+.note-expand-canvas {
+    margin-left: auto;
+}
+
+.note-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 170px;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: #ffffff;
+    touch-action: none;
 }
 
 .projects-grid {
@@ -2720,6 +3203,41 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
     color: color-mix(in srgb, var(--vera-workspace-subtle) 76%, transparent);
 }
 
+.vera-workspace-update-badge {
+    display: inline-flex;
+    max-width: min(28vw, 150px);
+    height: 18px;
+    align-items: center;
+    gap: 4px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--vera-workspace-accent) 42%, var(--vera-workspace-line));
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--vera-workspace-accent) 10%, transparent);
+    padding: 0 5px;
+    color: var(--vera-workspace-accent);
+    font-size: 10px;
+    line-height: 18px;
+    white-space: nowrap;
+}
+
+.vera-workspace-update-badge span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.vera-workspace-update-badge:hover {
+    background: color-mix(in srgb, var(--vera-workspace-accent) 18%, transparent);
+}
+
+.vera-workspace-update-badge:disabled {
+    cursor: wait;
+    opacity: 0.82;
+}
+
+.vera-workspace-update-badge.is-updating svg {
+    animation: spin 0.85s linear infinite;
+}
+
 .vera-workspace-log-toggle {
     display: inline-flex;
     width: 18px;
@@ -2794,10 +3312,6 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
 .vera-workspace-shell .vera-workspace-composer:focus-within {
     border-color: var(--vera-workspace-accent);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--vera-workspace-accent) 18%, transparent);
-}
-
-.vera-workspace-composer.is-disconnected {
-    opacity: 0.62;
 }
 
 .attachment-image-preview {
@@ -2876,5 +3390,40 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
     .chat-empty-copy h1,
     .chat-empty-stage.light .chat-empty-copy h1 {
         font-size: 3.7rem;
+    }
+
+    .vera-workspace-brand span {
+        display: none;
+    }
+
+    .notes-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .notes-list {
+        max-height: 118px;
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        border-right: 0;
+        border-bottom: 1px solid var(--vera-workspace-line);
+    }
+
+    .note-list-item {
+        min-width: 190px;
+    }
+
+    .note-editor {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(180px, 0.7fr) minmax(180px, 0.55fr) minmax(230px, 1fr);
+        overflow-y: auto;
+    }
+
+    .note-editor-main {
+        grid-row: auto;
+    }
+
+    .note-canvas {
+        height: 230px;
     }
 }

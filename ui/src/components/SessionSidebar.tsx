@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Archive, Bot, Boxes, FileStack, MoreHorizontal, Pin, Search, Trash2 } from 'lucide-react';
+import { Archive, Bot, Boxes, FileStack, MoreHorizontal, Pin, Search, StickyNote, Trash2 } from 'lucide-react';
 import type { SessionRecord } from '../services/sessionService';
 
 interface SessionSidebarProps {
@@ -12,9 +12,12 @@ interface SessionSidebarProps {
   onPin: (session: SessionRecord) => void;
   onArchive: (session: SessionRecord) => void;
   onDelete: (session: SessionRecord) => void;
+  archiveMode: boolean;
+  onArchiveModeChange: (archiveMode: boolean) => void;
   onSkills: () => void;
   onProjects: () => void;
-  activeSection: 'skills' | 'projects' | null;
+  onNotes: () => void;
+  activeSection: 'skills' | 'projects' | 'notes' | null;
 }
 
 function formatAge(timestamp: number): string {
@@ -35,8 +38,11 @@ export function SessionSidebar({
   onPin,
   onArchive,
   onDelete,
+  archiveMode,
+  onArchiveModeChange,
   onSkills,
   onProjects,
+  onNotes,
   activeSection,
 }: SessionSidebarProps) {
   const [query, setQuery] = useState('');
@@ -92,7 +98,7 @@ export function SessionSidebar({
               <Pin size={13} /> {session.pinned ? 'Открепить' : 'Закрепить'}
             </button>
             <button onClick={() => { setMenuId(null); onArchive(session); }}>
-              <Archive size={13} /> В архив
+              <Archive size={13} /> {archiveMode ? 'Вернуть' : 'В архив'}
             </button>
             <button className="danger" onClick={() => { setMenuId(null); onDelete(session); }}>
               <Trash2 size={13} /> Удалить
@@ -115,6 +121,13 @@ export function SessionSidebar({
         <Bot size={17} />
         Новая сессия
       </button>
+      <button
+        className={`session-nav-item ${archiveMode ? 'active' : ''}`}
+        type="button"
+        onClick={() => onArchiveModeChange(!archiveMode)}
+      >
+        <Archive size={17} /> {archiveMode ? 'Активные' : 'Архив'}
+      </button>
 
       <button
         className={`session-nav-item ${activeSection === 'skills' ? 'active' : ''}`}
@@ -130,20 +143,33 @@ export function SessionSidebar({
       >
         <FileStack size={17} /> Проекты
       </button>
+      <button
+        className={`session-nav-item ${activeSection === 'notes' ? 'active' : ''}`}
+        type="button"
+        onClick={onNotes}
+      >
+        <StickyNote size={17} /> Заметки
+      </button>
 
       <div className="session-list">
-        <div className="session-section-label">Закрепленные</div>
-        {pinnedSessions.length > 0
-          ? renderRows(pinnedSessions)
-          : <div className="session-pin-hint"><Pin size={12} /> Закрепляйте важные сессии</div>}
-        <div className="session-section-label">Сессии <span>{regularSessions.length}</span></div>
+        {!archiveMode && (
+          <>
+            <div className="session-section-label">Закрепленные</div>
+            {pinnedSessions.length > 0
+              ? renderRows(pinnedSessions)
+              : <div className="session-pin-hint"><Pin size={12} /> Закрепляйте важные сессии</div>}
+          </>
+        )}
+        <div className="session-section-label">
+          {archiveMode ? 'Архив' : 'Сессии'} <span>{archiveMode ? visibleSessions.length : regularSessions.length}</span>
+        </div>
         {searchOpen && (
           <label className="session-search">
             <Search size={13} />
             <input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Поиск сессий" />
           </label>
         )}
-        {renderRows(regularSessions)}
+        {renderRows(archiveMode ? visibleSessions : regularSessions)}
         {visibleSessions.length === 0 && (
           <div className="session-empty">Сессии не найдены</div>
         )}

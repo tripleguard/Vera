@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell, clipboard } = require('electron');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
@@ -530,6 +530,21 @@ if (!gotSingleInstanceLock) {
             await shell.openExternal(parsedUrl.toString());
         });
 
+        ipcMain.handle('clipboard-write-image', async (_event, imageSource) => {
+            if (typeof imageSource !== 'string' || !imageSource.trim()) {
+                throw new Error('Invalid image source');
+            }
+            if (!imageSource.startsWith('data:image/')) {
+                throw new Error('Unsupported image source');
+            }
+            const image = nativeImage.createFromDataURL(imageSource);
+            if (image.isEmpty()) {
+                throw new Error('Image is empty');
+            }
+            clipboard.writeImage(image);
+            return true;
+        });
+
         ipcMain.handle('workspace-reveal-item', (_event, itemPath) => {
             if (typeof itemPath !== 'string') {
                 throw new Error('Path does not exist');
@@ -630,12 +645,6 @@ if (!gotSingleInstanceLock) {
                     }
                     chatWindow.setOpacity(opacity);
                 }, 30);
-            }
-        });
-
-        ipcMain.on('close-chat', () => {
-            if (chatWindow) {
-                chatWindow.hide();
             }
         });
 

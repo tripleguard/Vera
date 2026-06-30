@@ -109,6 +109,7 @@ def _format_model_name(model_path: str) -> str:
 
 def _get_runtime_info() -> dict:
     from main.agent import _external_url, _llm_server, _use_external
+    from main.llama_update import get_local_llama_version
 
     if _use_external:
         model_path = str(_external_url)
@@ -128,6 +129,7 @@ def _get_runtime_info() -> dict:
         "version": VERA_APP_VERSION,
         "model_name": model_name,
         "model_path": model_path,
+        "llama_cpp": get_local_llama_version(),
     }
 
 def verify_token(token: str | None) -> bool:
@@ -172,8 +174,40 @@ async def get_runtime_info_api():
             "version": VERA_APP_VERSION,
             "model_name": "Unknown model",
             "model_path": "",
+            "llama_cpp": {"build": None, "raw": ""},
             "error": str(e),
         })
+
+
+@app.get("/api/llama-update")
+async def get_llama_update_api(force: bool = False):
+    try:
+        from main.llama_update import check_llama_update
+
+        return JSONResponse(content=check_llama_update(force_refresh=force))
+    except Exception as e:
+        return JSONResponse(content={
+            "status": "error",
+            "update_available": False,
+            "error": str(e),
+        }, status_code=500)
+
+
+@app.post("/api/llama-update/install")
+async def install_llama_update_api():
+    try:
+        from main.llama_update import install_latest_llama_update
+
+        payload = install_latest_llama_update()
+        status_code = 500 if payload.get("status") == "error" else 200
+        return JSONResponse(content=payload, status_code=status_code)
+    except Exception as e:
+        return JSONResponse(content={
+            "status": "error",
+            "update_available": True,
+            "restart_required": False,
+            "error": str(e),
+        }, status_code=500)
 
 
 @app.get("/api/skills")

@@ -44,6 +44,17 @@ export async function listSessions(fetcher: AuthFetch, archived = false, query =
   return data.sessions || [];
 }
 
+export async function getSession(fetcher: AuthFetch, sessionId: string): Promise<SessionRecord | null> {
+  try {
+    const data = await expectJson<{ session: SessionRecord }>(
+      fetcher(`http://127.0.0.1:8000/api/sessions/${encodeURIComponent(sessionId)}`),
+    );
+    return data.session || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createSession(fetcher: AuthFetch): Promise<SessionRecord> {
   const data = await expectJson<{ session: SessionRecord }>(
     fetcher('http://127.0.0.1:8000/api/sessions', {

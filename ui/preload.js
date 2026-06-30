@@ -1,7 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const SEND_CHANNELS = new Set([
-    'close-chat',
     'minimize-chat',
     'quit-app',
     'restart-app',
@@ -13,6 +12,7 @@ const SEND_CHANNELS = new Set([
 ]);
 
 const INVOKE_CHANNELS = new Set([
+    'clipboard-write-image',
     'projects-list',
     'projects-trash',
     'terminal-start',
