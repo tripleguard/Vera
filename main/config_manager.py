@@ -78,10 +78,6 @@ DEFAULT_CONFIG = {
         "early_stop_min_sources": 3,
         "early_stop_timeout": 5.0,
     },
-    "heartbeat": {
-        "enabled": True,
-    },
-
     "ui": {
         "performance_mode": "balanced",
         "animation_adaptive": True,
@@ -98,7 +94,6 @@ _DEFAULT_DATA_FILES = [
     "config.json",
     "heartbeat_tasks.json",
     "reminders.json",
-    "scheduled_apps.json",
     "memory.json",
 ]
 
@@ -107,7 +102,6 @@ _MUTABLE_FILES = [
     "memory.json",
     "heartbeat_tasks.json",
     "reminders.json",
-    "scheduled_apps.json",
     "app_index.json",
 ]
 

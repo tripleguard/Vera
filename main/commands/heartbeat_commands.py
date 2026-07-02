@@ -1,7 +1,8 @@
 import re
 import datetime
 import threading
-from typing import Optional, Callable
+import uuid
+from typing import Optional, Callable, Any
 from dataclasses import dataclass, asdict
 from user.json_storage import load_json, save_json
 from main.lang_ru import replace_number_words
@@ -10,6 +11,8 @@ from .scheduler_base import SchedulerBase, now_str, parse_time_str
 import os
 
 _HEARTBEAT_FILE = get_data_dir() / "heartbeat_tasks.json"
+_VALID_RECURRING = {"once", "daily", "weekdays", "weekends", "interval"}
+_MAX_INTERVAL_MINUTES = 60 * 24 * 30
 
 @dataclass
 class HeartbeatTask:
@@ -21,6 +24,10 @@ class HeartbeatTask:
     enabled: bool = True
     target_date: Optional[str] = None
     interval_minutes: int = 0
+    id: str = ""
+    last_status: Optional[str] = None
+    last_error: Optional[str] = None
+    run_count: int = 0
 
 _heartbeat_tasks: list[HeartbeatTask] = []
 _ROUTE_CMD_CB: Optional[Callable[[str], str]] = None
@@ -29,6 +36,105 @@ def set_heartbeat_route_callback(cb: Callable[[str], str]) -> None:
     """Устанавливает функцию выполнения команды (route_command)."""
     global _ROUTE_CMD_CB
     _ROUTE_CMD_CB = cb
+
+def _new_task_id() -> str:
+    return uuid.uuid4().hex
+
+def _normalize_time(value: Any, fallback: str = "12:00") -> str:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d{1,2}:\d{1,2}", text):
+        return fallback
+    hour_text, minute_text = text.split(":", 1)
+    hour = int(hour_text)
+    minute = int(minute_text)
+    if hour > 23 or minute > 59:
+        return fallback
+    return f"{hour:02d}:{minute:02d}"
+
+def _valid_date(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.datetime.strptime(text, "%Y-%m-%d")
+        return text
+    except ValueError:
+        return None
+
+def _valid_timestamp(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d-%H-%M-%S", "%Y-%m-%d-%H-%M"):
+        try:
+            datetime.datetime.strptime(text, fmt)
+            return text
+        except ValueError:
+            pass
+    return None
+
+def normalize_heartbeat_task(item: Any) -> HeartbeatTask:
+    if not isinstance(item, dict):
+        raise ValueError("task must be an object")
+    task_text = str(item.get("task_text") or "").strip()
+    if not task_text:
+        raise ValueError("task_text is required")
+
+    recurring = str(item.get("recurring") or "daily").strip()
+    if recurring not in _VALID_RECURRING:
+        recurring = "daily"
+
+    try:
+        interval_minutes = int(item.get("interval_minutes") or 0)
+    except (TypeError, ValueError):
+        interval_minutes = 0
+    interval_minutes = max(0, min(interval_minutes, _MAX_INTERVAL_MINUTES))
+    if recurring == "interval" and interval_minutes < 1:
+        interval_minutes = 1
+
+    try:
+        run_count = max(0, int(item.get("run_count") or 0))
+    except (TypeError, ValueError):
+        run_count = 0
+
+    return HeartbeatTask(
+        task_text=task_text,
+        time=_normalize_time(item.get("time")),
+        recurring=recurring,
+        created_at=_valid_timestamp(item.get("created_at")) or now_str(),
+        last_run=_valid_timestamp(item.get("last_run")),
+        enabled=bool(item.get("enabled", True)),
+        target_date=_valid_date(item.get("target_date")),
+        interval_minutes=interval_minutes,
+        id=str(item.get("id") or _new_task_id()),
+        last_status=item.get("last_status") if item.get("last_status") in {"running", "success", "failed"} else None,
+        last_error=str(item.get("last_error") or "")[:1000] or None,
+        run_count=run_count,
+    )
+
+def normalize_heartbeat_tasks(data: Any) -> list[HeartbeatTask]:
+    if not isinstance(data, list):
+        raise ValueError("tasks must be a list")
+    loaded: list[HeartbeatTask] = []
+    seen_ids: set[str] = set()
+    for item in data:
+        task = normalize_heartbeat_task(item)
+        if task.id in seen_ids:
+            task.id = _new_task_id()
+        seen_ids.add(task.id)
+        loaded.append(task)
+    return loaded
+
+def get_heartbeat_tasks() -> list[dict]:
+    if _HEARTBEAT_FILE.exists():
+        _load_heartbeat_tasks()
+    return [asdict(t) for t in _heartbeat_tasks]
+
+def replace_heartbeat_tasks(data: Any) -> list[dict]:
+    global _heartbeat_tasks
+    _heartbeat_tasks = normalize_heartbeat_tasks(data)
+    _save_heartbeat_tasks()
+    return [asdict(t) for t in _heartbeat_tasks]
 
 def _save_heartbeat_tasks() -> None:
     data = [asdict(t) for t in _heartbeat_tasks]
@@ -40,21 +146,13 @@ def _load_heartbeat_tasks() -> None:
     global _heartbeat_tasks
     data = load_json(_HEARTBEAT_FILE, [])
     if not data:
+        _heartbeat_tasks = []
         return
     
     loaded = []
     for item in data:
         try:
-            loaded.append(HeartbeatTask(
-                task_text=item["task_text"],
-                time=item["time"],
-                recurring=item.get("recurring", "daily"),
-                created_at=item.get("created_at", now_str()),
-                last_run=item.get("last_run"),
-                enabled=item.get("enabled", True),
-                target_date=item.get("target_date"),
-                interval_minutes=item.get("interval_minutes", 0)
-            ))
+            loaded.append(normalize_heartbeat_task(item))
         except Exception as e:
             print(f"[HEARTBEAT] Ошибка загрузки задачи: {e}")
             
@@ -141,6 +239,9 @@ class _HeartbeatScheduler(SchedulerBase):
 
             if not should_run_now:
                 continue
+            success = True
+            task.last_status = "running"
+            task.last_error = None
                 
             print(f"[HEARTBEAT] Исполняю задачу: {task.task_text}")
             
@@ -152,9 +253,13 @@ class _HeartbeatScheduler(SchedulerBase):
                         print(f"[HEARTBEAT] Результат: {result}")
                         self.speak(f"Напоминание по задаче: {result}")
             except Exception as e:
+                success = False
+                task.last_error = str(e)[:1000]
                 print(f"[HEARTBEAT] Ошибка выполнения задачи '{task.task_text}': {e}")
                 
             task.last_run = now_str()
+            task.last_status = "success" if success else "failed"
+            task.run_count += 1
             if task.recurring == "once":
                 task.enabled = False
             _save_heartbeat_tasks()
@@ -177,14 +282,14 @@ def add_heartbeat_task(task_text: str, time_str: str, recurring: str="daily", ta
         if current_mtime > _heartbeat_scheduler._last_mtime:
             _load_heartbeat_tasks()
             
-    task = HeartbeatTask(
-        task_text=task_text,
-        time=time_str,
-        recurring=recurring,
-        created_at=now_str(),
-        target_date=target_date,
-        interval_minutes=interval_minutes
-    )
+    task = normalize_heartbeat_task({
+        "task_text": task_text,
+        "time": time_str,
+        "recurring": recurring,
+        "created_at": now_str(),
+        "target_date": target_date,
+        "interval_minutes": interval_minutes,
+    })
     _heartbeat_tasks.append(task)
     _save_heartbeat_tasks()
     return task

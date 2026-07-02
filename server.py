@@ -64,6 +64,7 @@ async def ws_broadcaster():
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from main.config_manager import get_config, get_data_dir
+from main.commands.heartbeat_commands import get_heartbeat_tasks, replace_heartbeat_tasks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -290,27 +291,26 @@ async def upload_file_api(file: UploadFile = File(...)):
 @app.get("/api/heartbeat-tasks")
 async def get_heartbeat_tasks_api():
     """Возвращает список периодических задач."""
-    tasks_file = get_data_dir() / "heartbeat_tasks.json"
-    if not tasks_file.exists():
-        return JSONResponse(content=[])
     try:
-        content = json.loads(tasks_file.read_text(encoding="utf-8"))
-        return JSONResponse(content=content)
+        return JSONResponse(content=get_heartbeat_tasks())
+    except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 @app.post("/api/heartbeat-tasks")
 async def save_heartbeat_tasks_api(request: Request):
     """Сохраняет список периодических задач."""
-    tasks_file = get_data_dir() / "heartbeat_tasks.json"
-    
     try:
         payload = await request.json()
         tasks = payload if isinstance(payload, list) else payload.get("tasks", [])
-        tasks_file.write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
-        now = time.time() + 0.2
-        os.utime(tasks_file, (now, now))
-        return JSONResponse(content={"status": "success", "message": "Задачи успешно обновлены."})
+        return JSONResponse(content={
+            "status": "success",
+            "tasks": replace_heartbeat_tasks(tasks),
+            "message": "Tasks updated.",
+        })
+    except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 

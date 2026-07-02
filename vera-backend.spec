@@ -112,7 +112,6 @@ datas = [
     (os.path.join('data', 'config.json'), os.path.join('data')),
     (os.path.join('data', 'heartbeat_tasks.json'), os.path.join('data')),
     (os.path.join('data', 'reminders.json'), os.path.join('data')),
-    (os.path.join('data', 'scheduled_apps.json'), os.path.join('data')),
     (os.path.join('skills', 'presentations', 'SKILL.md'), os.path.join('skills', 'presentations')),
     (os.path.join('skills', 'documents', 'SKILL.md'), os.path.join('skills', 'documents')),
     # Звуковые файлы

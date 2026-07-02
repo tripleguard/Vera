@@ -8,6 +8,10 @@ from main.lang_ru import TIME_UNITS, replace_number_words
 _scheduled_shutdown = None  # Тип: None | 'shutdown' | 'restart'
 
 
+def _run_power_command(argv: list[str]) -> None:
+    subprocess.Popen(argv)
+
+
 def execute_power_command(text: str) -> Optional[str]:
     """Обрабатывает команды управления питанием."""
 
@@ -19,7 +23,7 @@ def execute_power_command(text: str) -> Optional[str]:
     
     # Спящий режим
     if "спящий режим" in lowered or "режим сна" in lowered:
-        subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+        subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
         return "Перевожу компьютер в спящий режим."
     
     # Выключение через время
@@ -32,12 +36,12 @@ def execute_power_command(text: str) -> Optional[str]:
     
     # Немедленное выключение
     if re.search(r"\b(выключ[иь]|выключить)\s+компьютер\b", lowered):
-        subprocess.Popen("shutdown /s /t 0", shell=True)
+        _run_power_command(["shutdown", "/s", "/t", "0"])
         return "Выключаю компьютер."
     
     # Немедленная перезагрузка
     if re.search(r"\b(перезагруз[иь]|перезагрузить)\s+компьютер\b", lowered):
-        subprocess.Popen("shutdown /r /t 0", shell=True)
+        _run_power_command(["shutdown", "/r", "/t", "0"])
         return "Перезагружаю компьютер."
     
     return None
@@ -74,13 +78,13 @@ def _schedule_shutdown(text: str, action: str) -> str:
     
     try:
         if action == "shutdown":
-            cmd = f"shutdown /s /t {seconds}"
+            cmd = ["shutdown", "/s", "/t", str(seconds)]
             action_name = "Выключение"
         else:  # restart
-            cmd = f"shutdown /r /t {seconds}"
+            cmd = ["shutdown", "/r", "/t", str(seconds)]
             action_name = "Перезагрузка"
         
-        subprocess.Popen(cmd, shell=True)
+        _run_power_command(cmd)
         _scheduled_shutdown = action
         
         # Форматирование времени для ответа
@@ -107,7 +111,7 @@ def _cancel_shutdown() -> str:
     
     try:
         # Отменяем через команду shutdown -a
-        result = subprocess.run("shutdown /a", shell=True, capture_output=True, text=True)
+        result = subprocess.run(["shutdown", "/a"], capture_output=True, text=True)
         
         if result.returncode == 0:
             action_name = "выключение" if _scheduled_shutdown == "shutdown" else "перезагрузка"
