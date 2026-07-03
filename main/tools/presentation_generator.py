@@ -10,6 +10,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from main.response_sanitizer import strip_thinking_markup
 
 MIN_SLIDES = 4
 MAX_SLIDES = 10
@@ -106,7 +107,7 @@ def _normalize_slide(raw: Any, index: int) -> Optional[Dict[str, Any]]:
 
 
 def _extract_json(response: str) -> Dict[str, Any]:
-    cleaned = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+    cleaned = strip_thinking_markup(response).strip()
     cleaned = cleaned.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
         parsed = json.loads(cleaned)
@@ -265,7 +266,6 @@ def _refine_plan(
             top_p=0.8,
             stop=["```"],
             chat_template_kwargs={"enable_thinking": False},
-            thinking_budget_tokens=0,
         )
         parsed = _extract_json(result["choices"][0]["message"]["content"])
         refined = []
@@ -362,7 +362,6 @@ summary — финальные выводы.
             top_p=0.85,
             stop=["```"],
             chat_template_kwargs={"enable_thinking": False},
-            thinking_budget_tokens=0,
         )
         parsed = _extract_json(result["choices"][0]["message"]["content"])
         slides: List[Dict[str, Any]] = []

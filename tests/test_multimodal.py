@@ -72,6 +72,19 @@ class MultimodalTests(unittest.TestCase):
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["thinking_budget_tokens"], 768)
 
+    def test_client_omits_thinking_budget_when_thinking_disabled(self):
+        client = LlamaClient(port=9999)
+        with patch.object(client._session, "post", return_value=_Response()) as post:
+            client.create_chat_completion(
+                messages=[{"role": "user", "content": "РџСЂРёРІРµС‚"}],
+                chat_template_kwargs={"enable_thinking": False},
+                thinking_budget_tokens=0,
+            )
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertNotIn("thinking_budget_tokens", payload)
+
     def test_stream_parser_uses_low_latency_chunks_and_closes_response(self):
         class _StreamResponse(_Response):
             def __init__(self):

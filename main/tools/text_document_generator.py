@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from main.response_sanitizer import strip_thinking_markup
 
 _FORMAT_TOKENS = re.compile(
     r"\b(?:текстов(?:ый|ого)\s+документ|доклад|отч[её]т|реферат|статью|статья|"
@@ -120,7 +121,6 @@ def generate_document_content(
         temperature=0.35,
         top_p=0.85,
         chat_template_kwargs={"enable_thinking": False},
-        thinking_budget_tokens=0,
     )
     message = result.get("choices", [{}])[0].get("message", {})
     content = message.get("content") or ""
@@ -129,7 +129,7 @@ def generate_document_content(
             str(part.get("text") or "") if isinstance(part, dict) else str(part)
             for part in content
         )
-    content = re.sub(r"<think>.*?</think>", "", str(content), flags=re.DOTALL).strip()
+    content = strip_thinking_markup(str(content)).strip()
     content = re.sub(r"^```(?:markdown|text)?\s*|\s*```$", "", content, flags=re.IGNORECASE).strip()
     if len(content) < 120:
         raise RuntimeError("Модель не сформировала достаточный текст документа.")

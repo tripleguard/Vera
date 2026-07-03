@@ -23,6 +23,49 @@ _EMOJI_RE = re.compile(
     "]+",
     flags=re.UNICODE,
 )
+_REASONING_BUDGET_RE = re.compile(
+    r"(?:^|\n|\r)\s*"
+    r"(?:бюджет\s+)?размышлени[яй]\s+исчерпан[а-я]*[.!?]?\s*"
+    r"перехожу\s+к\s+финальн(?:ому|ый)\s+ответ[ау]?[.!?]?\s*",
+    flags=re.IGNORECASE,
+)
+_EN_REASONING_BUDGET_RE = re.compile(
+    r"(?:^|\n|\r)\s*"
+    r"(?:reasoning|thinking)\s+budget\s+(?:is\s+)?(?:exhausted|exceeded)[.!?]?\s*"
+    r"(?:moving|switching|proceeding)\s+to\s+(?:the\s+)?final\s+answer[.!?]?\s*",
+    flags=re.IGNORECASE,
+)
+_REASONING_BUDGET_PREFIXES = (
+    "бюджет размышления исчерпан. перехожу к финальному ответу.",
+    "размышления исчерпан. перехожу к финальному ответу.",
+    "reasoning budget exhausted. moving to final answer.",
+    "thinking budget exhausted. moving to final answer.",
+    "reasoning budget exceeded. moving to final answer.",
+    "thinking budget exceeded. moving to final answer.",
+)
+
+
+def strip_thinking_markup(text: str) -> str:
+    """Remove model/server reasoning markers from text visible to users."""
+    clean = str(text or "").replace("\ufffd", "")
+    clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"^.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"<think>.*$", "", clean, flags=re.DOTALL | re.IGNORECASE)
+    clean = re.sub(r"</?think>", "", clean, flags=re.IGNORECASE)
+    clean = _REASONING_BUDGET_RE.sub("", clean)
+    clean = _EN_REASONING_BUDGET_RE.sub("", clean)
+    return clean
+
+
+def might_be_thinking_markup_prefix(text: str) -> bool:
+    """Return True while a streaming prefix may still become reasoning markup."""
+    clean = str(text or "").replace("\ufffd", "").lstrip().lower()
+    clean = re.sub(r"\s+", " ", clean)
+    if not clean:
+        return True
+    if "<think".startswith(clean) or clean.startswith("<think"):
+        return True
+    return any(prefix.startswith(clean) for prefix in _REASONING_BUDGET_PREFIXES)
 
 
 def strip_markdown_for_tts(text: str) -> str:
@@ -47,7 +90,8 @@ def strip_emoji_for_tts(text: str) -> str:
 def clean_for_tts(text: str) -> str:
     """Remove markup, source noise and links before sending text to TTS."""
     try:
-        s = strip_markdown_for_tts(text)
+        s = strip_thinking_markup(text)
+        s = strip_markdown_for_tts(s)
         s = strip_emoji_for_tts(s)
         s = re.sub(r"\s*\(источники?:.*?\)\s*$", "", s, flags=re.IGNORECASE | re.DOTALL)
         s = re.sub(r"\bисточники?:.*$", "", s, flags=re.IGNORECASE)

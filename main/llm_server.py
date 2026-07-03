@@ -512,6 +512,13 @@ class LlamaClient:
             # llama-server поддерживает repeat_penalty напрямую
             payload["repeat_penalty"] = rp
 
+        chat_template_kwargs = payload.get("chat_template_kwargs")
+        if (
+            isinstance(chat_template_kwargs, dict)
+            and chat_template_kwargs.get("enable_thinking") is False
+        ):
+            payload.pop("thinking_budget_tokens", None)
+
         try:
             is_streaming = payload.get("stream", False)
             response = self._session.post(

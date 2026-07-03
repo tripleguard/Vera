@@ -34,7 +34,11 @@ from .tools.text_document_generator import execute_text_document_creation
 from .tools.document_generator import create_docx, create_md, create_pptx, create_txt
 from .prompt_builder import build_system_prompt, reload_prompt, get_prompt_status
 from .audit import get_audit_logger
-from .response_sanitizer import clean_for_tts
+from .response_sanitizer import (
+    clean_for_tts,
+    might_be_thinking_markup_prefix,
+    strip_thinking_markup,
+)
 from .voice_control import is_bare_activation_command, is_voice_stop_command
 
 
@@ -685,12 +689,7 @@ _tts_thread = threading.Thread(target=_tts_worker, daemon=True)
 _tts_thread.start()
 
 def _sanitize_assistant_response(text: str) -> str:
-    clean = str(text or "").replace("\ufffd", "")
-    clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
-    clean = re.sub(r"^.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
-    clean = re.sub(r"<think>.*$", "", clean, flags=re.DOTALL | re.IGNORECASE)
-    clean = re.sub(r"</?think>", "", clean, flags=re.IGNORECASE)
-    return clean.strip()
+    return strip_thinking_markup(text).strip()
 
 
 def speak(text: str):
@@ -1392,7 +1391,8 @@ def ask_llm(
         thinking_budget_tokens = _thinking_budget_tokens
     thinking_active = bool(thinking_enabled and thinking_budget_tokens > 0)
     gen_args["chat_template_kwargs"] = {"enable_thinking": thinking_active}
-    gen_args["thinking_budget_tokens"] = thinking_budget_tokens if thinking_active else 0
+    if thinking_active:
+        gen_args["thinking_budget_tokens"] = thinking_budget_tokens
 
     effective_allow_tools = allow_tools and not image_data_url and not (intent and intent.plain_code)
     if effective_allow_tools:
@@ -1408,15 +1408,10 @@ def ask_llm(
                 str(part.get("text") or "") if isinstance(part, dict) else str(part)
                 for part in content
             )
-        text = re.sub(r"<think>.*?</think>", "", str(content), flags=re.DOTALL)
-        return re.sub(r"<think>.*$", "", text, flags=re.DOTALL).strip()
+        return strip_thinking_markup(str(content)).strip()
 
     def _clean_generated_chunk(text: str) -> str:
-        clean = str(text or "").replace("\ufffd", "")
-        clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL)
-        clean = re.sub(r"^.*?</think>", "", clean, flags=re.DOTALL)
-        clean = re.sub(r"<think>.*$", "", clean, flags=re.DOTALL)
-        return clean
+        return strip_thinking_markup(text)
 
     def _clean_generated_text(text: str) -> str:
         return _clean_generated_chunk(text).strip()
@@ -1431,7 +1426,7 @@ def ask_llm(
         retry_args = dict(gen_args)
         retry_args["stream"] = False
         retry_args["chat_template_kwargs"] = {"enable_thinking": False}
-        retry_args["thinking_budget_tokens"] = 0
+        retry_args.pop("thinking_budget_tokens", None)
         try:
             retry_args["max_tokens"] = max(256, int(retry_args.get("max_tokens") or 0))
         except Exception:
@@ -1465,16 +1460,40 @@ def ask_llm(
     if use_stream:
         full_response = ""
         full_thoughts = ""
+        chat_stream_buffer = ""
+        chat_stream_started = False
         in_think = False
         saw_thought = False
         streamed_tool_calls: dict[int, dict] = {}
 
+        def _flush_chat_stream_buffer(force: bool = False):
+            nonlocal chat_stream_buffer, chat_stream_started
+            if not chat_stream_buffer:
+                return
+            if not force and might_be_thinking_markup_prefix(chat_stream_buffer):
+                return
+            if force and might_be_thinking_markup_prefix(chat_stream_buffer):
+                chat_stream_buffer = ""
+                return
+            chunk_text = chat_stream_buffer
+            chat_stream_buffer = ""
+            if not chat_stream_started:
+                chunk_text = chunk_text.lstrip()
+            if not chunk_text:
+                return
+            chat_stream_started = True
+            _send_ws({"type": "chat_chunk", "text": chunk_text})
+
         def _append_chat(chunk_text: str):
-            nonlocal full_response
+            nonlocal full_response, chat_stream_buffer
             if not chunk_text:
                 return
             full_response += chunk_text
-            _send_ws({"type": "chat_chunk", "text": chunk_text})
+            chat_stream_buffer += chunk_text
+            cleaned_buffer = strip_thinking_markup(chat_stream_buffer)
+            if cleaned_buffer != chat_stream_buffer:
+                chat_stream_buffer = cleaned_buffer
+            _flush_chat_stream_buffer()
 
         def _append_thought(chunk_text: str):
             nonlocal full_thoughts, saw_thought
@@ -1568,6 +1587,7 @@ def ask_llm(
                 if (streamed_tool_calls[i].get("function", {}) or {}).get("name")
             ]
             if ordered_tool_calls:
+                _flush_chat_stream_buffer(force=True)
                 return _handle_tool_calls(
                     ordered_tool_calls,
                     user_text=user_text,
@@ -1579,7 +1599,8 @@ def ask_llm(
                     file_name=file_name,
                 )
 
-        final_reply = full_response.strip()
+        _flush_chat_stream_buffer(force=True)
+        final_reply = _clean_generated_text(full_response)
         if final_reply:
             return final_reply
         if saw_thought:

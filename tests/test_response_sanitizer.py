@@ -1,6 +1,12 @@
 import unittest
 
-from main.response_sanitizer import clean_for_tts, strip_emoji_for_tts, strip_markdown_for_tts
+from main.response_sanitizer import (
+    clean_for_tts,
+    might_be_thinking_markup_prefix,
+    strip_emoji_for_tts,
+    strip_markdown_for_tts,
+    strip_thinking_markup,
+)
 
 
 class ResponseSanitizerTests(unittest.TestCase):
@@ -23,6 +29,24 @@ class ResponseSanitizerTests(unittest.TestCase):
         self.assertIn("Ответ готов", cleaned)
         self.assertNotIn("http", cleaned)
         self.assertNotIn("источники", cleaned.lower())
+
+    def test_thinking_budget_message_is_not_user_visible(self):
+        cleaned = strip_thinking_markup(
+            "Бюджет размышления исчерпан. Перехожу к финальному ответу.\n\n"
+            "Я Вера, ваш персональный помощник."
+        )
+        self.assertEqual(cleaned.strip(), "Я Вера, ваш персональный помощник.")
+
+    def test_partial_thinking_budget_message_is_removed(self):
+        cleaned = strip_thinking_markup(
+            "размышления исчерпан. Перехожу к финальному ответу.\n\n"
+            "Все хорошо, я на связи."
+        )
+        self.assertEqual(cleaned.strip(), "Все хорошо, я на связи.")
+
+    def test_thinking_budget_stream_prefix_is_buffered(self):
+        self.assertTrue(might_be_thinking_markup_prefix("Бюджет размыш"))
+        self.assertFalse(might_be_thinking_markup_prefix("Бро, все хорошо"))
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ class WebSearchAnswerTests(unittest.TestCase):
             answer = web_search_answer("что такое скфу", cfg, "system", llm, urls)
 
         self.assertEqual(llm.calls[0]["chat_template_kwargs"], {"enable_thinking": False})
-        self.assertEqual(llm.calls[0]["thinking_budget_tokens"], 0)
+        self.assertNotIn("thinking_budget_tokens", llm.calls[0])
         self.assertNotIn("<think", answer.lower())
         self.assertNotIn("</think", answer.lower())
         self.assertNotIn("�", answer)
