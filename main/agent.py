@@ -18,7 +18,6 @@ import msvcrt
 from web.web_search import web_search_answer, execute_wikipedia_command
 from web.weather import execute_weather_command, set_default_city_provider
 from web.currency import execute_currency_command
-from .lang_ru import convert_years_in_text
 from .commands import HANDLERS, set_speak_callback, set_last_search_urls_ref, stop_timer_ring, is_timer_ringing, set_timer_ws_callback
 from .commands import set_reminder_shutdown_event
 from .commands import start_heartbeat_scheduler, set_heartbeat_speak_callback, set_heartbeat_route_callback, set_heartbeat_shutdown_event
@@ -35,6 +34,7 @@ from .tools.text_document_generator import execute_text_document_creation
 from .tools.document_generator import create_docx, create_md, create_pptx, create_txt
 from .prompt_builder import build_system_prompt, reload_prompt, get_prompt_status
 from .audit import get_audit_logger
+from .response_sanitizer import clean_for_tts
 from .voice_control import is_bare_activation_command, is_voice_stop_command
 
 
@@ -684,72 +684,6 @@ def _tts_worker():
 _tts_thread = threading.Thread(target=_tts_worker, daemon=True)
 _tts_thread.start()
 
-_EMOJI_RE = re.compile(
-    "[" 
-    "\U0001F1E6-\U0001F1FF"  # flags
-    "\U0001F300-\U0001F5FF"  # symbols & pictographs
-    "\U0001F600-\U0001F64F"  # emoticons
-    "\U0001F680-\U0001F6FF"  # transport & map symbols
-    "\U0001F700-\U0001F77F"
-    "\U0001F780-\U0001F7FF"
-    "\U0001F800-\U0001F8FF"
-    "\U0001F900-\U0001F9FF"
-    "\U0001FA00-\U0001FAFF"
-    "\u2600-\u26FF"          # misc symbols
-    "\u2700-\u27BF"          # dingbats
-    "]+",
-    flags=re.UNICODE,
-)
-
-
-def _strip_markdown_for_tts(text: str) -> str:
-    s = text or ""
-    # Блоки кода для озвучивания обычно бесполезны
-    s = re.sub(r"```[\s\S]*?```", " ", s)
-    # markdown-ссылки: оставляем только текст ссылки
-    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", s)
-    # inline-код
-    s = re.sub(r"`([^`]+)`", r"\1", s)
-    # Заголовки/цитаты/маркеры списков
-    s = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", s)
-    s = re.sub(r"(?m)^\s{0,3}>\s*", "", s)
-    s = re.sub(r"(?m)^\s*[-*+]\s+", "", s)
-    s = re.sub(r"(?m)^\s*\d+\.\s+", "", s)
-    # Частые inline-маркеры форматирования
-    s = s.replace("**", "").replace("__", "").replace("~~", "")
-    return s
-
-
-def _strip_emoji_for_tts(text: str) -> str:
-    s = text or ""
-    s = _EMOJI_RE.sub("", s)
-    # Zero-width joiner + variation selector (часто часть emoji)
-    s = s.replace("\u200d", "").replace("\ufe0f", "").replace("\ufe0e", "")
-    # Текстовые смайлики
-    s = re.sub(r"(?<!\w)([:;=8][\-^]?[)(DPpOo/\\|])(?!\w)", "", s)
-    return s
-
-
-def _clean_for_tts(text: str) -> str:
-    """Удаляет из ответа источники и ссылки, чтобы TTS их не зачитывал. Преобразует годы в правильное произношение."""
-    try:
-        s = _strip_markdown_for_tts(text)
-        s = _strip_emoji_for_tts(s)
-        # Удаляем блок вида "(источники: ... )" в конце
-        s = re.sub(r"\s*\(источники?:.*?\)\s*$", "", s, flags=re.IGNORECASE | re.DOTALL)
-        # Удаляем строки, начинающиеся с "источники:"
-        s = re.sub(r"\bисточники?:.*$", "", s, flags=re.IGNORECASE)
-        # Удаляем URL
-        s = re.sub(r"https?://\S+", "", s)
-        # Сжимаем пробелы
-        s = re.sub(r"\s{2,}", " ", s).strip()
-        # Преобразуем годы в правильное произношение
-        s = convert_years_in_text(s)
-        return s
-    except Exception:
-        return text
-
-
 def _sanitize_assistant_response(text: str) -> str:
     clean = str(text or "").replace("\ufffd", "")
     clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.DOTALL | re.IGNORECASE)
@@ -767,7 +701,7 @@ def speak(text: str):
         pass
 
     _tts_queue.put({'cmd': 'stop'})
-    safe_text = _clean_for_tts(text)
+    safe_text = clean_for_tts(text)
     _tts_queue.put({'cmd': 'say', 'text': safe_text})
     return _tts_thread
 

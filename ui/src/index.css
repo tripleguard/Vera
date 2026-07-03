@@ -1278,11 +1278,57 @@ body {
 
 .settings-select-shell.compact {
     min-width: 140px;
+    min-height: 42px;
 }
 
 .settings-select-shell select {
     width: 100%;
-    padding: 0.55rem 0.8rem;
+    min-height: 42px;
+    padding: 0 0.85rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+}
+
+.settings-task-schedule-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.settings-interval-input {
+    display: inline-flex;
+    min-width: 160px;
+    min-height: 42px;
+    align-items: center;
+    justify-content: center;
+    gap: 0.65rem;
+    border: 1px solid color-mix(in srgb, var(--vera-border) 70%, transparent);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--vera-bg) 62%, transparent);
+    padding: 0 0.85rem;
+    color: var(--vera-text);
+}
+
+.settings-interval-input span {
+    color: var(--vera-muted);
+    font-size: 0.875rem;
+    line-height: 1;
+}
+
+.settings-interval-number {
+    width: 4.5rem;
+    border: 0;
+    background: transparent;
+    color: var(--vera-text);
+    font-size: 0.875rem;
+    line-height: 1;
+    text-align: right;
+}
+
+.settings-interval-number:focus {
+    outline: none;
 }
 
 .settings-toggle-row {
@@ -2107,11 +2153,6 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
     white-space: nowrap;
 }
 
-.workspace-heading-mark {
-    color: var(--vera-workspace-accent);
-    font-size: 9px;
-}
-
 .workspace-heading-actions {
     flex: 0 0 auto;
     gap: 2px !important;
@@ -2243,12 +2284,21 @@ body.light-mode ::-webkit-scrollbar-thumb:hover {
 .workspace-terminal-live-prompt {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-top: 2px;
+    gap: 0;
+    margin-top: 0;
     color: var(--vera-workspace-accent);
     font-family: Consolas, "Cascadia Mono", monospace;
     font-size: 11px;
-    white-space: pre-wrap;
+    line-height: 1.5;
+    white-space: pre;
+}
+
+.workspace-terminal-prompt-prefix {
+    color: color-mix(in srgb, var(--vera-workspace-text) 88%, #8ee8dc);
+}
+
+.workspace-terminal-current-input {
+    color: var(--vera-workspace-accent);
 }
 
 .workspace-terminal-live-prompt i {

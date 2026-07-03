@@ -9,6 +9,7 @@ import subprocess
 import time
 import os
 import re
+import secrets
 import base64
 import io
 from pathlib import Path
@@ -30,14 +31,19 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections:
+        stale_connections: list[WebSocket] = []
+        payload = json.dumps(message)
+        for connection in list(self.active_connections):
             try:
-                await connection.send_text(json.dumps(message))
+                await connection.send_text(payload)
             except Exception:
-                pass
+                stale_connections.append(connection)
+        for connection in stale_connections:
+            self.disconnect(connection)
 
 from main.agent import (
     _ws_out_queue,
@@ -65,6 +71,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from main.config_manager import get_config, get_data_dir
 from main.commands.heartbeat_commands import get_heartbeat_tasks, replace_heartbeat_tasks
+from main.upload_utils import safe_upload_name
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -136,7 +143,7 @@ def _get_runtime_info() -> dict:
 def verify_token(token: str | None) -> bool:
     if not VERA_API_TOKEN:
         return True  # В небезопасном режиме (запуск напрямую), если токен не задан
-    return token == VERA_API_TOKEN
+    return secrets.compare_digest(str(token or ""), VERA_API_TOKEN)
 
 @app.middleware("http")
 async def verify_auth_token(request: Request, call_next):
@@ -236,23 +243,24 @@ async def update_config_api(new_config: dict):
 @app.post("/api/upload")
 async def upload_file_api(file: UploadFile = File(...)):
     """Принимает файл, извлекает текст и возвращает его."""
+    max_upload_bytes = 20 * 1024 * 1024
     uploads_dir = get_data_dir() / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     
     # Сохраняем во временную папку
-    safe_name = file.filename.replace("..", "_").replace("/", "_").replace("\\", "_")
-    tmp_path = uploads_dir / safe_name
+    original_name = file.filename or "upload"
+    tmp_path = uploads_dir / safe_upload_name(original_name)
     
     try:
-        content = await file.read()
+        content = await file.read(max_upload_bytes + 1)
+        if len(content) > max_upload_bytes:
+            return JSONResponse(
+                content={"error": "File is larger than 20 MB", "filename": original_name},
+                status_code=413,
+            )
         content_type = str(file.content_type or "").lower()
-        suffix = Path(file.filename or "").suffix.lower()
+        suffix = Path(original_name).suffix.lower()
         if content_type.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
-            if len(content) > 20 * 1024 * 1024:
-                return JSONResponse(
-                    content={"error": "Image is larger than 20 MB", "filename": file.filename},
-                    status_code=413,
-                )
             with Image.open(io.BytesIO(content)) as image:
                 image = image.convert("RGB")
                 image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
@@ -267,7 +275,7 @@ async def upload_file_api(file: UploadFile = File(...)):
             return JSONResponse(content={
                 "kind": "image",
                 "text": "",
-                "filename": file.filename,
+                "filename": original_name,
                 "image_data_url": f"data:image/jpeg;base64,{encoded}",
                 "image_preview_data_url": f"data:image/jpeg;base64,{preview_encoded}",
             })
@@ -277,9 +285,9 @@ async def upload_file_api(file: UploadFile = File(...)):
         from main.tools.read_document import read_document_from_path
         text = read_document_from_path(tmp_path)
         
-        return JSONResponse(content={"text": text, "filename": file.filename})
+        return JSONResponse(content={"text": text, "filename": original_name})
     except Exception as e:
-        return JSONResponse(content={"text": f"Ошибка чтения файла: {e}", "filename": file.filename}, status_code=500)
+        return JSONResponse(content={"text": f"Ошибка чтения файла: {e}", "filename": original_name}, status_code=500)
     finally:
         # Удаляем временный файл
         try:
@@ -523,7 +531,7 @@ async def get_session_messages_api(session_id: str):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str = None):
     if VERA_API_TOKEN:
-        if not token or token != VERA_API_TOKEN:
+        if not verify_token(token):
             await websocket.accept()
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid API token")
             return

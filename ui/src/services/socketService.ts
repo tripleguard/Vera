@@ -16,14 +16,22 @@ export function connectSocketWithReconnect(
 
   const connect = () => {
     if (closed) return;
+    if (timer != null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
     ws = new WebSocket(url);
     ws.onopen = () => handlers.onOpen?.(ws as WebSocket);
     ws.onmessage = (event) => handlers.onMessage?.(event as MessageEvent<string>);
     ws.onerror = () => handlers.onError?.();
     ws.onclose = () => {
       handlers.onClose?.();
-      if (!closed) {
-        timer = window.setTimeout(connect, reconnectMs);
+      ws = null;
+      if (!closed && timer == null) {
+        timer = window.setTimeout(() => {
+          timer = null;
+          connect();
+        }, reconnectMs);
       }
     };
   };
@@ -37,7 +45,12 @@ export function connectSocketWithReconnect(
       timer = null;
     }
     if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
       ws.close();
+      ws = null;
     }
   };
 }

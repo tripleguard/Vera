@@ -1326,7 +1326,7 @@ function SettingsModal({
                                                     </button>
                                                 </div>
                                             </div>
-                                            <div className="flex flex-wrap gap-2">
+                                            <div className="settings-task-schedule-row">
                                                 <div className="settings-select-shell compact">
                                                     <select
                                                         value={task.recurring}
@@ -1360,15 +1360,15 @@ function SettingsModal({
                                                 )}
 
                                                 {task.recurring === 'interval' && (
-                                                    <div className="flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-2 py-1.5">
+                                                    <div className="settings-interval-input">
                                                         <input
                                                             type="number"
                                                             min="1"
                                                             value={task.interval_minutes}
                                                             onChange={e => handleTaskChange(idx, 'interval_minutes', parseInt(e.target.value) || 0)}
-                                                            className="w-16 bg-transparent text-sm focus:outline-none text-right"
+                                                            className="settings-interval-number"
                                                         />
-                                                        <span className="text-sm opacity-50">минут</span>
+                                                        <span>минут</span>
                                                     </div>
                                                 )}
                                             </div>
@@ -1664,7 +1664,7 @@ function WidgetView({ isLightMode }: { isLightMode: boolean }) {
     }, []);
 
     useEffect(() => {
-        const wsUrl = apiToken ? `ws://127.0.0.1:8000/ws?token=${apiToken}` : 'ws://127.0.0.1:8000/ws';
+        const wsUrl = apiToken ? `ws://127.0.0.1:8000/ws?token=${encodeURIComponent(apiToken)}` : 'ws://127.0.0.1:8000/ws';
         return connectSocketWithReconnect(
             wsUrl,
             {
@@ -2160,9 +2160,15 @@ function WorkspacePanel({
     const [terminalOutput, setTerminalOutput] = useState('');
     const [terminalInput, setTerminalInput] = useState('');
     const [terminalRunning, setTerminalRunning] = useState(false);
+    const [terminalPrompt, setTerminalPrompt] = useState('>');
     const terminalEndRef = useRef<HTMLDivElement | null>(null);
     const terminalInputRef = useRef<HTMLInputElement | null>(null);
     const terminalStartedRef = useRef(false);
+
+    const extractTerminalPrompt = useCallback((output: string) => {
+        const normalized = output.replace(/\r\n/g, '\n');
+        return normalized.match(/(^|\n)([A-Za-z]:\\[^>\n]*>)$/)?.[2] || '';
+    }, []);
 
     const loadDirectory = useCallback(async (directoryPath: string) => {
         if (!ipcRenderer || !directoryPath) return [];
@@ -2198,7 +2204,14 @@ function WorkspacePanel({
     useEffect(() => {
         if (!ipcRenderer) return;
         const handleOutput = (_event: unknown, chunk: string) => {
-            setTerminalOutput(previous => `${previous}${chunk}`.slice(-100000));
+            setTerminalOutput(previous => {
+                const next = `${previous}${chunk}`.slice(-100000);
+                const prompt = extractTerminalPrompt(next);
+                if (prompt) {
+                    setTerminalPrompt(prompt);
+                }
+                return next;
+            });
         };
         const handleExit = (_event: unknown, payload: { code?: number }) => {
             setTerminalRunning(false);
@@ -2211,15 +2224,18 @@ function WorkspacePanel({
             ipcRenderer.removeListener('terminal-exit', handleExit);
             ipcRenderer.send('terminal-stop');
         };
-    }, []);
+    }, [extractTerminalPrompt]);
 
     useEffect(() => {
         if (mode !== 'terminal' || !ipcRenderer || terminalRunning || terminalStartedRef.current) return;
         terminalStartedRef.current = true;
         ipcRenderer.invoke<{ cwd?: string }>('terminal-start')
             .then(result => {
+                if (result?.cwd) {
+                    setTerminalPrompt(result.cwd.endsWith('>') ? result.cwd : `${result.cwd}>`);
+                }
                 setTerminalRunning(true);
-                setTerminalOutput(previous => previous || `CMD · ${result?.cwd || ''}\r\n`);
+                setTerminalOutput(previous => previous);
             })
             .catch((error: Error) => {
                 terminalStartedRef.current = false;
@@ -2282,10 +2298,23 @@ function WorkspacePanel({
         }
     };
 
+    const normalizedTerminalOutput = terminalOutput.replace(/\r\n/g, '\n');
+    const terminalPromptMatch = normalizedTerminalOutput.match(/(^|\n)([A-Za-z]:\\[^>\n]*>)$/);
+    const terminalVisiblePrompt = terminalPromptMatch?.[2] || terminalPrompt;
+    const terminalVisibleOutput = terminalPromptMatch
+        ? normalizedTerminalOutput.slice(0, terminalPromptMatch.index).replace(/\n{2,}$/g, '\n')
+        : normalizedTerminalOutput;
+
     const submitTerminalCommand = () => {
         const command = terminalInput.trim();
         if (!command || !ipcRenderer) return;
-        setTerminalOutput(previous => `${previous}> ${command}\r\n`);
+        setTerminalOutput(previous => {
+            const normalized = previous.replace(/\r\n/g, '\n');
+            const hasPrompt = /(^|\n)[A-Za-z]:\\[^>\n]*>$/.test(normalized);
+            return hasPrompt
+                ? `${previous}${command}\r\n`
+                : `${previous}${terminalVisiblePrompt}${command}\r\n`;
+        });
         ipcRenderer.send('terminal-input', `${command}\r\n`);
         setTerminalInput('');
     };
@@ -2307,7 +2336,6 @@ function WorkspacePanel({
                 <div className="workspace-files-view">
                     <div className="workspace-panel-heading">
                         <div>
-                            <span className="workspace-heading-mark">▦</span>
                             <strong>{rootName || 'ФАЙЛЫ'}</strong>
                         </div>
                         <div className="workspace-heading-actions">
@@ -2357,7 +2385,6 @@ function WorkspacePanel({
                 <div className="workspace-terminal-view">
                     <div className="workspace-panel-heading">
                         <div>
-                            <span className="workspace-heading-mark">▦</span>
                             <strong>CMD</strong>
                         </div>
                         <button type="button" onClick={() => setTerminalOutput('')} title="Очистить">Очистить</button>
@@ -2369,10 +2396,10 @@ function WorkspacePanel({
                         tabIndex={0}
                         aria-label="Терминал CMD"
                     >
-                        <pre>{terminalOutput || 'Запуск CMD...'}</pre>
+                        <pre>{terminalVisibleOutput || (!terminalStartedRef.current ? 'Запуск CMD...' : '')}</pre>
                         <div className="workspace-terminal-live-prompt">
-                            <span>&gt;</span>
-                            <span>{terminalInput}</span>
+                            <span className="workspace-terminal-prompt-prefix">{terminalVisiblePrompt}</span>
+                            <span className="workspace-terminal-current-input">{terminalInput}</span>
                             <i />
                         </div>
                         <input
@@ -3778,7 +3805,7 @@ function ChatView({
     }, [flushChunkBatch]);
 
     useEffect(() => {
-        const wsUrl = apiToken ? `ws://127.0.0.1:8000/ws?token=${apiToken}` : 'ws://127.0.0.1:8000/ws';
+        const wsUrl = apiToken ? `ws://127.0.0.1:8000/ws?token=${encodeURIComponent(apiToken)}` : 'ws://127.0.0.1:8000/ws';
         return connectSocketWithReconnect(
             wsUrl,
             {

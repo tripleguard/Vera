@@ -57,6 +57,42 @@ class ToolRouterTests(unittest.TestCase):
             [],
         )
 
+    def test_system_commands_do_not_select_llm_tools(self):
+        cases = [
+            "Вера, открой хром",
+            "Вера, громкость 50",
+            "Вера, сделай скриншот",
+            "Вера, таймер стоп",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                route = route_intent(text)
+                self.assertEqual(route.skill, None)
+                self.assertEqual(route.tools, ())
+                self.assertFalse(route.direct_web)
+
+    def test_requested_presentation_phrase_routes_to_skill(self):
+        route = route_intent("Вера, сделай презентацию про ядро ОС")
+        self.assertEqual(route.skill, "presentations")
+        self.assertEqual(route.tools, ())
+
+    def test_requested_document_phrase_routes_to_document_skill(self):
+        route = route_intent("Вера, напиши реферат и сохрани в docx")
+        self.assertEqual(route.skill, "documents")
+        self.assertEqual(route.tools, ("create_document",))
+
+    def test_requested_current_person_phrase_uses_web_search(self):
+        self.assertEqual(
+            select_tool_names("Кто такой Илон Маск сейчас"),
+            ["web_search"],
+        )
+
+    def test_read_file_with_attached_context_does_not_repeat_read_document(self):
+        self.assertEqual(
+            select_tool_names("Прочитай файл", file_name="report.docx"),
+            [],
+        )
+
     def test_existing_named_document_can_be_read(self):
         self.assertEqual(
             select_tool_names("Прочитай документ report.pdf"),

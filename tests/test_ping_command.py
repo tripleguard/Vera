@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from main.commands.system_control import execute_ping_command
+from main.commands.system_control import execute_ping_command, execute_taskmanager_command
 
 
 class PingCommandTests(unittest.TestCase):
@@ -29,6 +29,15 @@ class PingCommandTests(unittest.TestCase):
     def test_ping_requires_a_valid_target(self):
         self.assertIn("Уточните адрес", execute_ping_command("пинг"))
         self.assertIn("Не удалось распознать", execute_ping_command("пингани && shutdown"))
+
+    @patch("main.commands.system_control.subprocess.Popen")
+    def test_taskmanager_open_uses_argv_without_shell(self, popen_mock):
+        response = execute_taskmanager_command("открой диспетчер задач")
+
+        self.assertEqual(response, "Открываю диспетчер задач.")
+        args, kwargs = popen_mock.call_args
+        self.assertEqual(args[0], ["taskmgr.exe"])
+        self.assertNotIn("shell", kwargs)
 
 
 if __name__ == "__main__":

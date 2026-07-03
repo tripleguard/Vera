@@ -151,7 +151,7 @@ def execute_taskmanager_command(text: str) -> Optional[str]:
     
     if any(re.search(p, lower) for p in open_patterns):
         try:
-            subprocess.Popen(["taskmgr.exe"], shell=True)
+            subprocess.Popen(["taskmgr.exe"])
             return "Открываю диспетчер задач."
         except Exception as e:
             print(f"[TASKMGR] Ошибка: {e}")
