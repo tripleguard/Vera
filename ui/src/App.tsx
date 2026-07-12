@@ -3469,15 +3469,10 @@ function ChatView({
     }, []);
 
     const focusComposerSoon = useCallback(() => {
-        const focusComposer = () => {
+        window.setTimeout(() => {
             window.focus();
             composerInputRef.current?.focus({ preventScroll: true });
-        };
-
-        ipcRenderer?.send('focus-chat');
-        window.setTimeout(focusComposer, 0);
-        window.setTimeout(focusComposer, 80);
-        window.setTimeout(focusComposer, 200);
+        }, 0);
     }, []);
 
     const resetToEmptyChat = useCallback((focusComposer = false) => {

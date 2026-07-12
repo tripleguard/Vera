@@ -2,7 +2,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const SEND_CHANNELS = new Set([
     'minimize-chat',
-    'focus-chat',
     'quit-app',
     'restart-app',
     'terminal-input',

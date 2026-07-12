@@ -39,6 +39,8 @@ export function SessionPanelWindow({
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => readActiveSessionId());
   const [archiveMode, setArchiveMode] = useState(false);
+  const [deleteCandidate, setDeleteCandidate] = useState<SessionRecord | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
   const mountedRef = useRef(true);
   const refreshTimerRef = useRef<number | null>(null);
 
@@ -140,14 +142,19 @@ export function SessionPanelWindow({
   };
 
   const handleDelete = async (session: SessionRecord) => {
-    if (!window.confirm(`Удалить сессию «${session.title}»?`)) return;
-    await deleteSession(veraFetch, session.id);
-    const next = await syncSessions();
-    if (activeSessionId === session.id) {
-      const nextId = next[0]?.id || null;
-      setActiveSessionId(nextId);
-      writeActiveSessionId(nextId);
-      bumpSessionsRevision();
+    setDeletePending(true);
+    try {
+      await deleteSession(veraFetch, session.id);
+      const next = await syncSessions();
+      if (activeSessionId === session.id) {
+        const nextId = next[0]?.id || null;
+        setActiveSessionId(nextId);
+        writeActiveSessionId(nextId);
+        bumpSessionsRevision();
+      }
+      setDeleteCandidate(null);
+    } finally {
+      setDeletePending(false);
     }
   };
 
@@ -167,7 +174,7 @@ export function SessionPanelWindow({
         }}
         onPin={session => { void handlePatch(session, { pinned: !session.pinned }); }}
         onArchive={session => { void handleArchive(session); }}
-        onDelete={session => { void handleDelete(session); }}
+        onDelete={setDeleteCandidate}
         archiveMode={archiveMode}
         onArchiveModeChange={setArchiveMode}
         onSkills={onSkills}
@@ -175,6 +182,48 @@ export function SessionPanelWindow({
         onNotes={onNotes}
         activeSection={activeSection}
       />
+      {deleteCandidate && (
+        <div
+          className="session-delete-confirm-overlay no-drag-region"
+          role="presentation"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget && !deletePending) {
+              setDeleteCandidate(null);
+            }
+          }}
+        >
+          <div
+            className="session-delete-confirm"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="session-delete-confirm-title"
+            aria-describedby="session-delete-confirm-description"
+          >
+            <strong id="session-delete-confirm-title">Удалить сессию?</strong>
+            <p id="session-delete-confirm-description">
+              «{deleteCandidate.title}» будет удалена без возможности восстановления.
+            </p>
+            <div className="session-delete-confirm-actions">
+              <button
+                type="button"
+                autoFocus
+                disabled={deletePending}
+                onClick={() => setDeleteCandidate(null)}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={deletePending}
+                onClick={() => { void handleDelete(deleteCandidate); }}
+              >
+                {deletePending ? 'Удаление...' : 'Удалить'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

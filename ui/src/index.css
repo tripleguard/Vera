@@ -575,6 +575,71 @@ body {
     color: #ef8080;
 }
 
+.session-delete-confirm-overlay {
+    position: fixed;
+    z-index: 100;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.56);
+    padding: 20px;
+}
+
+.session-delete-confirm {
+    width: min(360px, calc(100vw - 40px));
+    border: 1px solid var(--vera-workspace-line);
+    border-radius: 8px;
+    background: var(--vera-workspace-panel-soft);
+    padding: 18px;
+    color: var(--vera-workspace-text);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+}
+
+.session-delete-confirm strong {
+    display: block;
+    font-size: 14px;
+}
+
+.session-delete-confirm p {
+    margin: 8px 0 18px;
+    color: var(--vera-workspace-subtle);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.session-delete-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.session-delete-confirm-actions button {
+    min-width: 82px;
+    border: 1px solid var(--vera-workspace-line);
+    border-radius: 6px;
+    padding: 7px 12px;
+    color: var(--vera-workspace-text);
+    font-size: 12px;
+}
+
+.session-delete-confirm-actions button:hover:not(:disabled),
+.session-delete-confirm-actions button:focus-visible {
+    border-color: var(--vera-workspace-accent);
+    outline: none;
+}
+
+.session-delete-confirm-actions button.danger {
+    border-color: rgba(239, 128, 128, 0.5);
+    background: rgba(239, 128, 128, 0.12);
+    color: #ff9b9b;
+}
+
+.session-delete-confirm-actions button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
 .session-empty {
     margin: 0.5rem;
     border: 1px dashed var(--vera-border);
