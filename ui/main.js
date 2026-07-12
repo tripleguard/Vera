@@ -654,6 +654,10 @@ if (!gotSingleInstanceLock) {
             }
         });
 
+        ipcMain.on('focus-chat', () => {
+            focusChatWindow();
+        });
+
         ipcMain.on('toggle-chat-fullscreen', () => {
             if (chatWindow && !chatWindow.isDestroyed()) {
                 if (chatWindow.isFullScreen()) {
