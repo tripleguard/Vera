@@ -3234,6 +3234,7 @@ function ChatView({
     const messagesEndRef = useRef<HTMLDivElement | null>(null);
     const pendingUserMsgs = useRef<Set<string>>(new Set()); // РўСЂРµРєРµСЂ РѕРїС‚РёРјРёСЃС‚РёС‡РЅС‹С… СЃРѕРѕР±С‰РµРЅРёР№
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const composerInputRef = useRef<HTMLInputElement | null>(null);
     const [attachedFile, setAttachedFile] = useState<File | null>(null);
     const attachmentPreviewUrl = useMemo(
         () => attachedFile && isImageFile(attachedFile) ? URL.createObjectURL(attachedFile) : null,
@@ -3467,6 +3468,25 @@ function ChatView({
         setMessages(prev => [...prev, { role: 'system', text }]);
     }, []);
 
+    const focusComposerSoon = useCallback(() => {
+        window.setTimeout(() => {
+            window.focus();
+            composerInputRef.current?.focus();
+        }, 0);
+    }, []);
+
+    const resetToEmptyChat = useCallback((focusComposer = false) => {
+        activeSessionIdRef.current = null;
+        setActiveSessionId(null);
+        setMessages([]);
+        setInput('');
+        setAttachedFile(null);
+        setRenderWindow(120);
+        if (focusComposer) {
+            focusComposerSoon();
+        }
+    }, [focusComposerSoon]);
+
     const refreshSessions = useCallback(async () => {
         const next = await listSessions(veraFetch);
         return next;
@@ -3547,14 +3567,9 @@ function ChatView({
         if (items[0]) {
             await selectSession(items[0].id);
         } else {
-            activeSessionIdRef.current = null;
-            setActiveSessionId(null);
-            setMessages([]);
-            setInput('');
-            setAttachedFile(null);
-            setRenderWindow(120);
+            resetToEmptyChat(true);
         }
-    }, [refreshSessions, selectSession]);
+    }, [refreshSessions, resetToEmptyChat, selectSession]);
 
     useEffect(() => {
         const onPaste = (event: ClipboardEvent) => {
@@ -3608,16 +3623,14 @@ function ChatView({
                 } else if (items.length > 0) {
                     await selectSession(items[0].id);
                 } else {
-                    activeSessionIdRef.current = null;
-                    setActiveSessionId(null);
-                    setMessages([]);
+                    resetToEmptyChat();
                 }
             })
             .catch(error => {
                 sessionsInitializedRef.current = false;
                 console.error('Не удалось загрузить сессии', error);
             });
-    }, [pushSystemMessage, refreshSessions, selectSession]);
+    }, [pushSystemMessage, refreshSessions, resetToEmptyChat, selectSession]);
 
     useEffect(() => {
         const onStorage = (event: StorageEvent) => {
@@ -3632,6 +3645,9 @@ function ChatView({
                         pushSystemMessage(`Ошибка обновления сессии: ${error.message}`);
                     });
                 }
+            }
+            if (event.key === ACTIVE_SESSION_STORAGE_KEY && !readActiveSessionId() && !activeSessionIdRef.current) {
+                resetToEmptyChat(true);
             }
             if (event.key === SESSIONS_REV_STORAGE_KEY) {
                 reconcileActiveSession().catch(() => undefined);
@@ -3648,6 +3664,9 @@ function ChatView({
                     pushSystemMessage(`Ошибка обновления сессии: ${error.message}`);
                 });
             }
+            if (!nextId && !activeSessionIdRef.current) {
+                resetToEmptyChat(true);
+            }
         };
         const onSessionsRevision = () => {
             reconcileActiveSession().catch(() => undefined);
@@ -3661,7 +3680,7 @@ function ChatView({
             window.removeEventListener(ACTIVE_SESSION_EVENT, onActiveSession);
             window.removeEventListener(SESSIONS_REV_EVENT, onSessionsRevision);
         };
-    }, [pushSystemMessage, reconcileActiveSession, selectSession]);
+    }, [pushSystemMessage, reconcileActiveSession, resetToEmptyChat, selectSession]);
 
     const findLastStreamingAssistantIndex = useCallback((arr: Message[]): number => {
         for (let i = arr.length - 1; i >= 0; i--) {
@@ -4452,6 +4471,7 @@ function ChatView({
                         <Brain size={18} />
                     </button>
                     <input
+                        ref={composerInputRef}
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
