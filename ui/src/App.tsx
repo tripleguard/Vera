@@ -2235,7 +2235,6 @@ function WorkspacePanel({
                     setTerminalPrompt(result.cwd.endsWith('>') ? result.cwd : `${result.cwd}>`);
                 }
                 setTerminalRunning(true);
-                setTerminalOutput(previous => previous);
             })
             .catch((error: Error) => {
                 terminalStartedRef.current = false;
@@ -3630,43 +3629,36 @@ function ChatView({
                 sessionsInitializedRef.current = false;
                 console.error('Не удалось загрузить сессии', error);
             });
-    }, [pushSystemMessage, refreshSessions, resetToEmptyChat, selectSession]);
+    }, [refreshSessions, resetToEmptyChat, selectSession]);
 
     useEffect(() => {
+        const applyActiveSession = (nextId: string | null) => {
+            if (nextId) {
+                if (nextId === activeSessionIdRef.current) return;
+                selectSession(nextId).catch(error => {
+                    pushSystemMessage(`Ошибка переключения сессии: ${error.message}`);
+                });
+                return;
+            }
+            if (activeSessionIdRef.current) {
+                reconcileActiveSession().catch(error => {
+                    pushSystemMessage(`Ошибка обновления сессии: ${error.message}`);
+                });
+                return;
+            }
+            resetToEmptyChat(true);
+        };
+
         const onStorage = (event: StorageEvent) => {
             if (event.key === ACTIVE_SESSION_STORAGE_KEY) {
-                const nextId = readActiveSessionId();
-                if (nextId && nextId !== activeSessionIdRef.current) {
-                    selectSession(nextId).catch(error => {
-                        pushSystemMessage(`Ошибка переключения сессии: ${error.message}`);
-                    });
-                } else if (!nextId && activeSessionIdRef.current) {
-                    reconcileActiveSession().catch(error => {
-                        pushSystemMessage(`Ошибка обновления сессии: ${error.message}`);
-                    });
-                }
-            }
-            if (event.key === ACTIVE_SESSION_STORAGE_KEY && !readActiveSessionId() && !activeSessionIdRef.current) {
-                resetToEmptyChat(true);
+                applyActiveSession(readActiveSessionId());
             }
             if (event.key === SESSIONS_REV_STORAGE_KEY) {
                 reconcileActiveSession().catch(() => undefined);
             }
         };
         const onActiveSession = (event: Event) => {
-            const nextId = (event as CustomEvent<string | null>).detail;
-            if (nextId && nextId !== activeSessionIdRef.current) {
-                selectSession(nextId).catch(error => {
-                    pushSystemMessage(`Ошибка переключения сессии: ${error.message}`);
-                });
-            } else if (!nextId && activeSessionIdRef.current) {
-                reconcileActiveSession().catch(error => {
-                    pushSystemMessage(`Ошибка обновления сессии: ${error.message}`);
-                });
-            }
-            if (!nextId && !activeSessionIdRef.current) {
-                resetToEmptyChat(true);
-            }
+            applyActiveSession((event as CustomEvent<string | null>).detail);
         };
         const onSessionsRevision = () => {
             reconcileActiveSession().catch(() => undefined);
