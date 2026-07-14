@@ -4,7 +4,6 @@ import random
 import time
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 from typing import Optional, List, Tuple
 from urllib.parse import urlparse, quote_plus, parse_qs
 
@@ -305,44 +304,50 @@ def fetch_urls_parallel(
     max_sources: int = 3,
     timeout: float = 3.0,
     early_stop_min: int = 3,
-    early_stop_timeout: float = 5.0
+    early_stop_timeout: float = 5.0,
+    log_page_errors: bool = False,
 ) -> List[Tuple[str, str]]:
-
+    if not urls or max_sources <= 0:
+        return []
     results: List[Tuple[str, str]] = []
-    results_lock = Lock()
     start_time = time.time()
-    
     max_workers = min(len(urls), 10)
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    future_to_url = {}
+    try:
         future_to_url = {
-            executor.submit(_fetch_page, url, timeout): url 
+            executor.submit(
+                _fetch_page,
+                url,
+                timeout,
+                log_errors=log_page_errors,
+            ): url
             for url in urls
         }
-        
+
         for future in as_completed(future_to_url):
             try:
                 url, text = future.result()
-                
+
                 if text:
-                    with results_lock:
-                        results.append((url, text))
-                        current_count = len(results)
-                    
+                    results.append((url, text))
+                    current_count = len(results)
                     elapsed = time.time() - start_time
-                    
+
                     if current_count >= max_sources:
                         print(f"[FETCH] Достигнут максимум: {max_sources} источников")
-                        # Заметка: cancel() на futures ThreadPoolExecutor не останавливает
-                        # уже запущенные запросы, а break + выход из with прекращает
-                        # ожидание незавершённых futures
                         break
-                    
+
                     if current_count >= early_stop_min and elapsed >= early_stop_timeout:
                         print(f"[FETCH] Early stop: {current_count} источников за {elapsed:.1f}с")
                         break
-                        
+
             except Exception:
                 continue
-    
+    finally:
+        for future in future_to_url:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
     return results

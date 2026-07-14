@@ -7,6 +7,7 @@ from typing import Callable, List, Dict, Optional
 
 from telethon import TelegramClient, events
 from main.config_manager import get_data_dir
+from main.feature_flags import TELEGRAM_INTEGRATION_ENABLED
 
 log = logging.getLogger("telegram_mode")
 
@@ -72,6 +73,9 @@ class TelegramMode:
 
     def start_in_background(self) -> bool:
         """Запускает Telegram-режим в фоновом потоке. Возвращает True при успехе."""
+        if not TELEGRAM_INTEGRATION_ENABLED:
+            log.info("Telegram-режим отключён feature flag")
+            return False
         if self.running:
             return False
         self._ready_event.clear()

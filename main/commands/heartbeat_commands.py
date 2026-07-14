@@ -208,7 +208,7 @@ class _HeartbeatScheduler(SchedulerBase):
         if _HEARTBEAT_FILE.exists():
             current_mtime = os.path.getmtime(_HEARTBEAT_FILE)
             if current_mtime > self._last_mtime:
-                print(f"[HEARTBEAT] Файл обновлен извне, перезагружаю задачи...")
+                print("[HEARTBEAT] Файл обновлен извне, перезагружаю задачи...")
                 _load_heartbeat_tasks()
                 self._last_mtime = current_mtime
                 

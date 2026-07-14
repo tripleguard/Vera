@@ -81,17 +81,6 @@ _TRIGGERS: List[Tuple[str, str]] = [
 ]
 
 
-# === Внутренние типы ===
-
-class _Fact(Dict):
-    """
-    Факт = {id, text, category, pinned, timestamp, source}.
-    Реализован как dict (а не dataclass) для совместимости с JSON-сериализацией
-    и для гибкости при forward-compat (можно добавить поля без миграций).
-    """
-    pass
-
-
 # === Главный класс ===
 
 class MemoryManager:
@@ -100,7 +89,7 @@ class MemoryManager:
 
     Поля:
       profile: Dict[str, str]           — key→value, до 10 полей
-      facts: List[_Fact]                — структурированные факты
+      facts: List[Dict[str, Any]]       — структурированные факты
     Хранение:
       Единственный формат — data/memory.json.
     """
@@ -333,7 +322,6 @@ class MemoryManager:
         results: List[Tuple[Dict[str, Any], float]] = []
         for f in self.facts:
             fid = f["id"]
-            text = self._fact_text(f)
             raw = bm25_raw.get(fid, 0.0)
             # Per-corpus нормализация: лучший матч → 1.0
             bm25_norm = (raw / max_raw) if max_raw > 0 else 0.0

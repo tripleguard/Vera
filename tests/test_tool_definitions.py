@@ -1,6 +1,6 @@
 import unittest
 
-from main.tool_definitions import get_tool_definitions
+from main.tool_definitions import TOOL_DEFINITIONS_BY_NAME, get_tool_definitions
 
 
 class ToolDefinitionTests(unittest.TestCase):
@@ -13,6 +13,10 @@ class ToolDefinitionTests(unittest.TestCase):
 
     def test_unknown_names_are_ignored(self):
         self.assertEqual(get_tool_definitions(["missing"]), [])
+
+    def test_disabled_telegram_is_not_exposed_to_model(self):
+        self.assertNotIn("telegram", TOOL_DEFINITIONS_BY_NAME)
+        self.assertEqual(get_tool_definitions(["telegram"]), [])
 
 
 if __name__ == "__main__":

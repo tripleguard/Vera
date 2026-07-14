@@ -83,7 +83,7 @@ def execute_predefined_command(text: str) -> Optional[str]:
                         args = s[idx + len(ext):].strip().split() if s[idx + len(ext):].strip() else []
                         subprocess.Popen([exe_path, *args])
                         return f"Запускаю {key}."
-                return f"Ошибка: команда не содержит исполняемый файл."
+                return "Ошибка: команда не содержит исполняемый файл."
             except Exception as e:
                 return f"Ошибка запуска {key}: {e}"
         

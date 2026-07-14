@@ -1,7 +1,16 @@
 import re
 from typing import Optional
 
-HELP_TEXT = """Вот что я умею — просто говори своими словами, не обязательно слово в слово.
+from main.feature_flags import TELEGRAM_INTEGRATION_ENABLED
+
+
+_TELEGRAM_HELP_TEXT = """
+Telegram
+Подключи телеграм по номеру +79001234567
+Введи код 12345
+"""
+
+HELP_TEXT = f"""Вот что я умею — просто говори своими словами, не обязательно слово в слово.
 
 Время и дата
 Который час / сколько времени / какое время
@@ -91,9 +100,7 @@ HELP_TEXT = """Вот что я умею — просто говори свои�
 Забудь про кофе
 Забудь всё
 
-Telegram
-Подключи телеграм по номеру +79001234567
-Введи код 12345
+{_TELEGRAM_HELP_TEXT if TELEGRAM_INTEGRATION_ENABLED else ''}
 
 Разное
 Подбрось монетку / орёл или решка

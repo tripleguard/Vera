@@ -48,7 +48,7 @@ def _read_txt(file_path: Path) -> str:
             return file_path.read_text(encoding=enc)
         except (UnicodeDecodeError, UnicodeError):
             continue
-    raise ValueError(f"Не удалось прочитать файл в известных кодировках")
+    raise ValueError("Не удалось прочитать файл в известных кодировках")
 
 
 def _read_docx(file_path: Path) -> str:

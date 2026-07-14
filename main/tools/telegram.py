@@ -19,6 +19,7 @@ from telethon.errors import (
 )
 from telethon.tl.types import User
 from main.config_manager import get_data_dir
+from main.feature_flags import TELEGRAM_DISABLED_MESSAGE, TELEGRAM_INTEGRATION_ENABLED
 
 log = logging.getLogger("telegram")
 
@@ -48,7 +49,7 @@ _CONTACT_CASE_SUFFIXES = (
     ("С‹", "Р°"),
 )
 def _ensure_runtime_loop() -> asyncio.AbstractEventLoop:
-    global _runtime_loop, _runtime_thread
+    global _runtime_thread
     with _runtime_lock:
         if (
             _runtime_loop
@@ -99,7 +100,6 @@ def _run(coro):
 
 def _client_disconnect():
     """Disconnects global Telegram client."""
-    global _client
     if _client is None:
         return
 
@@ -391,6 +391,9 @@ async def _who_wrote(contact: Optional[str] = None) -> str:
 
 
 def execute_telegram_tool(args: dict) -> str:
+    if not TELEGRAM_INTEGRATION_ENABLED:
+        return TELEGRAM_DISABLED_MESSAGE
+
     action = str(args.get("action", "send_message")).strip()
     get = args.get
     required = {

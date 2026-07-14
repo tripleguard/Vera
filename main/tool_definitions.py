@@ -5,7 +5,10 @@
 Модель сама решает, какой инструмент вызвать, на основе этих описаний.
 """
 
-TOOL_DEFINITIONS = [
+from main.feature_flags import TELEGRAM_INTEGRATION_ENABLED
+
+
+_ALL_TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
@@ -187,6 +190,13 @@ TOOL_DEFINITIONS = [
         }
     },
 ]
+
+TOOL_DEFINITIONS = [
+    item
+    for item in _ALL_TOOL_DEFINITIONS
+    if TELEGRAM_INTEGRATION_ENABLED or item["function"]["name"] != "telegram"
+]
+
 
 TOOL_DEFINITIONS_BY_NAME = {
     item["function"]["name"]: item

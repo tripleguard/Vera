@@ -375,7 +375,7 @@ function createWindows() {
     chatWindow.on('enter-full-screen', sendWindowState);
     chatWindow.on('leave-full-screen', sendWindowState);
     chatWindow.webContents.on('did-finish-load', sendWindowState);
-    chatWindow.on('close', (e) => {
+    chatWindow.on('close', () => {
         if (!isQuitting) {
             isQuitting = true;
             app.quit();

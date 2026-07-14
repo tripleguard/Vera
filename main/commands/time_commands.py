@@ -330,7 +330,7 @@ def _execute_reminder_inner(cleaned: str) -> Optional[str]:
             _scheduled.remove(last_timer)
             _save_reminders()
         _emit_nearest_timer()
-        return f"Таймер удалён."
+        return "Таймер удалён."
     
     # Таймер: "таймер на 5 минут", "включи таймер на 10 минут", "поставь таймер на 15 минут"
     if m := re.search(r"(?:включи|поставь|установи|запусти)?\s*таймер\s+(?:на\s+)?(\d+)\s+([\u0430-\u044f]+)", cleaned):

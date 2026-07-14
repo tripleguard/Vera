@@ -20,9 +20,6 @@ import requests
 
 
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
-# Паттерн для поиска нужного архива (Windows x64 Vulkan)
-ASSET_KEYWORDS = ("win", "vulkan", "x64")
-ASSET_EXTENSION = ".zip"
 TARGET_FILE = "llama-server.exe"
 
 PROJECT_ROOT = Path(__file__).resolve().parent

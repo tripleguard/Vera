@@ -225,6 +225,10 @@ def _get_telegram_exit_commands():
 def _start_telegram_mode() -> str:
     """Запускает Telegram-режим и отключает микрофон."""
     global _telegram_mode, _mic_muted
+    from main.feature_flags import TELEGRAM_DISABLED_MESSAGE, TELEGRAM_INTEGRATION_ENABLED
+
+    if not TELEGRAM_INTEGRATION_ENABLED:
+        return TELEGRAM_DISABLED_MESSAGE
     if _telegram_mode and _telegram_mode.running:
         return "Я уже в Telegram-режиме. Пиши в збранное."
     # Отключаем старый клиент telegram.py ДО запуска нового потока,
@@ -417,7 +421,6 @@ def execute_slash_command(text: str) -> str:
     return "Неизвестная команда."
 
 def _stdin_listener():
-    global _mic_muted
     retry_count = 0
     max_retries = 3
     
@@ -749,7 +752,7 @@ except Exception as e:
 
 q = queue.Queue()
 
-def audio_callback(indata, frames, time_, status):
+def audio_callback(indata, _frames, _time, status):
     if status:
         print(status, file=sys.stderr)
     with _mic_muted_lock:
@@ -783,7 +786,7 @@ memory_manager = MemoryManager(DATA_DIR / "memory.json")
 set_default_city_provider(lambda: memory_manager.get_profile("город"))
 session_store = SessionStore(DATA_DIR / "vera.db")
 
-print(f"[INFO] Модули задач и памяти инициализированы.")
+print("[INFO] Модули задач и памяти инициализированы.")
 print(f"[MEMORY] Хранилище: {memory_manager.memory_path}")
 
 # Обработчик команд памяти (замена execute_profile_command)
@@ -1144,7 +1147,7 @@ def route_command_simple(
 def _web_search_for_skill(query: str) -> dict:
     """Обёртка веб-поиска для локальных skill-конвейеров."""
     try:
-        answer = web_search_answer(query, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS)
+        answer = web_search_answer(query, _WEB_CFG, llm, LAST_SEARCH_URLS)
         return {"text": answer, "sources": list(LAST_SEARCH_URLS)}
     except Exception as e:
         print(f"[SKILL_SEARCH] Ошибка поиска: {e}")
@@ -1152,6 +1155,10 @@ def _web_search_for_skill(query: str) -> dict:
 
 
 def _execute_telegram_action(args: dict[str, str], *, emit_event: bool = True) -> str:
+    from main.feature_flags import TELEGRAM_DISABLED_MESSAGE, TELEGRAM_INTEGRATION_ENABLED
+
+    if not TELEGRAM_INTEGRATION_ENABLED:
+        return TELEGRAM_DISABLED_MESSAGE
     if emit_event:
         _send_ws({"type": "tool_call", "name": "telegram", "args": args})
     from main.tools.telegram import execute_telegram_tool
@@ -1198,9 +1205,16 @@ def route_command(
 ) -> str:
     """\u0413\u043b\u0430\u0432\u043d\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043a\u043e\u043c\u0430\u043d\u0434 \u0431\u0435\u0437 \u043f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0449\u0438\u043a\u0430."""
     lowered = text.lower().strip()
-    if any(t in lowered for t in _TELEGRAM_TRIGGERS):
+    from main.feature_flags import TELEGRAM_INTEGRATION_ENABLED
+
+    if TELEGRAM_INTEGRATION_ENABLED and any(t in lowered for t in _TELEGRAM_TRIGGERS):
         return _start_telegram_mode()
-    if any(t in lowered for t in _get_telegram_exit_commands()) and _telegram_mode and _telegram_mode.running:
+    if (
+        TELEGRAM_INTEGRATION_ENABLED
+        and _telegram_mode
+        and _telegram_mode.running
+        and any(t in lowered for t in _get_telegram_exit_commands())
+    ):
         return _stop_telegram_mode()
 
     intent = route_intent(text)
@@ -1324,7 +1338,7 @@ def ask_llm(
     ):
         try:
             _send_ws({"type": "tool_call", "name": "web_search", "args": {"query": user_text}})
-            result = web_search_answer(user_text, _WEB_CFG, get_system_prompt(), llm, LAST_SEARCH_URLS)
+            result = web_search_answer(user_text, _WEB_CFG, llm, LAST_SEARCH_URLS)
             _send_ws({
                 "type": "tool_result",
                 "name": "web_search",
@@ -1459,7 +1473,6 @@ def ask_llm(
 
     if use_stream:
         full_response = ""
-        full_thoughts = ""
         chat_stream_buffer = ""
         chat_stream_started = False
         in_think = False
@@ -1496,14 +1509,13 @@ def ask_llm(
             _flush_chat_stream_buffer()
 
         def _append_thought(chunk_text: str):
-            nonlocal full_thoughts, saw_thought
+            nonlocal saw_thought
             if not chunk_text or not thinking_enabled:
                 return
             clean = str(chunk_text).replace("\ufffd", "")
             if not clean.strip():
                 saw_thought = True
                 return
-            full_thoughts += clean
             saw_thought = True
             _send_ws({"type": "thought_chunk", "text": clean})
 
@@ -1785,7 +1797,6 @@ def _handle_tool_calls(
                     output = web_search_answer(
                         query,
                         _WEB_CFG,
-                        get_system_prompt(),
                         llm,
                         LAST_SEARCH_URLS,
                     )

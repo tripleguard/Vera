@@ -30,7 +30,7 @@ class WebSearchAnswerTests(unittest.TestCase):
              patch("web.web_search.fetch_urls_parallel", return_value=[
                  ("https://example.com/skfu", "СКФУ — Северо-Кавказский федеральный университет.")
              ]):
-            answer = web_search_answer("что такое скфу", cfg, "system", llm, urls)
+            answer = web_search_answer("что такое скфу", cfg, llm, urls)
 
         self.assertEqual(llm.calls[0]["chat_template_kwargs"], {"enable_thinking": False})
         self.assertNotIn("thinking_budget_tokens", llm.calls[0])

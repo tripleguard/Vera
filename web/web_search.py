@@ -86,8 +86,7 @@ def execute_wikipedia_command(text: str) -> Optional[str]:
         return None
     return None
 
-def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_search_urls: list) -> str:
-    headers = get_default_headers()
+def web_search_answer(query: str, web_cfg: dict, llm, last_search_urls: list) -> str:
     log_page_errors = bool(web_cfg.get("log_page_errors", False))
     web_max_sources = int(web_cfg.get("max_sources", 5))
     web_page_timeout = float(web_cfg.get("page_timeout_sec", 3.0))
@@ -151,7 +150,8 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
         max_sources=web_max_sources,
         timeout=web_page_timeout,
         early_stop_min=early_stop_min,
-        early_stop_timeout=early_stop_timeout
+        early_stop_timeout=early_stop_timeout,
+        log_page_errors=log_page_errors,
     )
     
     # Обрабатываем результаты и соблюдаем лимит контекста
@@ -186,7 +186,6 @@ def web_search_answer(query: str, web_cfg: dict, system_prompt: str, llm, last_s
         acc += len(take)
     context = "\n".join(context_lines)
     has_context = bool(context_lines)
-    ql = (query or "").lower()
     extra_rules: list[str] = []
     if has_context:
         extra_rules.append(

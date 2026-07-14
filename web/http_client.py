@@ -7,8 +7,5 @@ run until dependencies are refreshed.
 
 try:
     import niquests as http  # type: ignore
-    CLIENT_NAME = "niquests"
 except Exception:
     import requests as http  # type: ignore
-    CLIENT_NAME = "requests"
-

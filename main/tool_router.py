@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import re
 from typing import Iterable
 
+from main.feature_flags import TELEGRAM_INTEGRATION_ENABLED
+
 
 _TELEGRAM_PATTERN = re.compile(
     r"\b(?:телеграм|telegram|сообщени|кто\s+писал|"
@@ -157,8 +159,8 @@ def route_intent(
         if name not in selected:
             selected.append(name)
 
-    telegram_action = _parse_telegram_action(text)
-    telegram_intent = bool(
+    telegram_action = _parse_telegram_action(text) if TELEGRAM_INTEGRATION_ENABLED else None
+    telegram_intent = TELEGRAM_INTEGRATION_ENABLED and bool(
         telegram_action
         or _TELEGRAM_PATTERN.search(text)
         or _TELEGRAM_SEND_PATTERN.search(text)

@@ -1,8 +1,11 @@
-# Vera — Голосовой агент для Windows
+﻿# Vera — Голосовой агент для Windows
+
+> **Telegram-интеграция временно отключена.** Код, зависимость и данные сохранены,
+> но интеграция не публикуется модели и не запускается через команды или `/tg`.
 
 ![Python](https://img.shields.io/badge/Python-min%203.10%2B-3776AB?logo=python&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-min%2020.19%2B-339933?logo=node.js&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-89%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-112%20passing-brightgreen)
 
 Полностью локальный голосовой агент с оффлайн-распознаванием речи, встроенной локальной моделью LLM и удобным графическим интерфейсом.
 
@@ -385,6 +388,9 @@ Skills расширяют поведение агента локальными �
 ```
 
 ## Telegram-режим
+
+> В текущей версии этот режим деактивирован единым feature flag. Раздел ниже
+> сохранён как документация для возможного контролируемого возврата функции.
 
 Агент может работать через "Telethon", подключаясь к привязанному аккаунту Telegram, обрабатывая команды прямо из папки **Избранное (Saved Messages)**:
 ```

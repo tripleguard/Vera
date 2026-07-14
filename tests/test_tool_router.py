@@ -28,16 +28,16 @@ class ToolRouterTests(unittest.TestCase):
     def test_writing_text_is_not_telegram(self):
         self.assertEqual(select_tool_names("Напиши текст о космосе"), [])
 
-    def test_explicit_recipient_can_use_telegram(self):
+    def test_explicit_recipient_does_not_use_disabled_telegram(self):
         self.assertEqual(
             select_tool_names("Напиши Маше что я скоро буду"),
-            ["telegram"],
+            [],
         )
 
-    def test_telegram_history_does_not_trigger_web_search(self):
+    def test_message_history_uses_no_disabled_telegram_tool(self):
         self.assertEqual(
-            select_tool_names("Найди что написал Андрей"),
-            ["telegram"],
+            select_tool_names("Что написал Андрей"),
+            [],
         )
 
     def test_research_report_prioritizes_search_with_two_tool_limit(self):
@@ -132,17 +132,13 @@ class ToolRouterTests(unittest.TestCase):
         self.assertFalse(route.plain_code)
         self.assertEqual(route.tools, ("code_interpreter",))
 
-    def test_telegram_auth_arguments_are_parsed_once(self):
+    def test_telegram_auth_arguments_are_inactive(self):
         phone_route = route_intent("Подключи телеграм по номеру +7 999 123-45-67")
-        self.assertEqual(
-            phone_route.telegram_action,
-            {"action": "start_auth", "phone": "+7 999 123-45-67"},
-        )
+        self.assertIsNone(phone_route.telegram_action)
+        self.assertNotIn("telegram", phone_route.tools)
         code_route = route_intent("код для телеграма: 12345")
-        self.assertEqual(
-            code_route.telegram_action,
-            {"action": "enter_code", "code": "12345"},
-        )
+        self.assertIsNone(code_route.telegram_action)
+        self.assertNotIn("telegram", code_route.tools)
 
     def test_web_only_route_can_use_direct_search(self):
         route = route_intent("Что такое WebGPU?")
