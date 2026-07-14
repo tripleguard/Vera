@@ -143,6 +143,17 @@ def _replace_file_with_retry(source: Path, destination: Path) -> None:
         raise last_error
 
 
+def _find_local_llama_executable() -> Path:
+    install_root = get_install_root()
+    for directory in (install_root, *install_root.parents):
+        candidate = directory / TARGET_FILE
+        if candidate.is_file():
+            return candidate
+        if directory == install_root.parent.parent:
+            break
+    return install_root / TARGET_FILE
+
+
 def install_latest_llama_update() -> dict[str, Any]:
     lock = _get_install_lock()
     if not lock.acquire(blocking=False):
@@ -161,7 +172,7 @@ def install_latest_llama_update() -> dict[str, Any]:
             return {**update, "restart_required": False, "installed": False}
 
         asset = update.get("asset") or {}
-        install_root = get_install_root()
+        install_root = _find_local_llama_executable().parent
         install_root.mkdir(parents=True, exist_ok=True)
         backup_root = install_root / "runtime_backups"
         backup_dir = backup_root / f"llama-{int(time.time())}"
@@ -208,7 +219,7 @@ def install_latest_llama_update() -> dict[str, Any]:
 
 
 def get_local_llama_version(exe_path: Path | None = None) -> dict[str, Any]:
-    exe = exe_path or (get_install_root() / TARGET_FILE)
+    exe = exe_path or _find_local_llama_executable()
     payload: dict[str, Any] = {
         "path": str(exe),
         "raw": "",

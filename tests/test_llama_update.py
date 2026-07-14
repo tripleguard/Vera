@@ -69,6 +69,29 @@ class LlamaUpdateTests(unittest.TestCase):
         self.assertEqual(Path(run.call_args.args[0][0]).name, "llama-server.exe")
         self.assertEqual(run.call_args.args[0][1], "--version")
 
+    def test_local_version_finds_inno_setup_runtime_above_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app_root = Path(tmp) / "Vera"
+            backend_root = app_root / "resources" / "backend"
+            backend_root.mkdir(parents=True)
+            exe = app_root / "llama-server.exe"
+            exe.write_bytes(b"")
+            completed = Mock(
+                stdout="version: 9992 (6eddde06a)",
+                stderr="",
+                returncode=0,
+            )
+            with (
+                patch("main.llama_update.get_install_root", return_value=backend_root),
+                patch("main.llama_update.subprocess.run", return_value=completed) as run,
+            ):
+                payload = llama_update.get_local_llama_version()
+
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["build"], 9992)
+        self.assertEqual(Path(payload["path"]), exe)
+        self.assertEqual(Path(run.call_args.args[0][0]), exe)
+
     def test_install_latest_update_replaces_runtime_files_and_keeps_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
