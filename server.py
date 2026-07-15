@@ -110,7 +110,7 @@ app.add_middleware(
 )
 
 VERA_API_TOKEN = os.environ.get("VERA_API_TOKEN", "")
-VERA_APP_VERSION = "1.1.1"
+VERA_APP_VERSION = "1.1.2"
 
 
 def _format_model_name(model_path: str) -> str:

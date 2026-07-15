@@ -4,7 +4,7 @@
 ; ============================================================
 
 #define MyAppName "Vera"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "TripleGuard"
 #define MyAppURL "https://github.com/tripleguard/Vera"
 #define MyAppExeName "Vera.exe"

@@ -3609,7 +3609,7 @@ function ChatView({
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [settingsInitialSection, setSettingsInitialSection] = useState('appearance');
     const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo>(() => ({
-        version: '1.1.1',
+        version: '1.1.2',
         model_name: localStorage.getItem(RUNTIME_MODEL_STORAGE_KEY) || 'Загрузка модели...',
     }));
     const [llamaUpdate, setLlamaUpdate] = useState<LlamaUpdateInfo | null>(null);
@@ -3742,7 +3742,7 @@ function ChatView({
                 if (cancelled) return;
                 localStorage.setItem(RUNTIME_MODEL_STORAGE_KEY, modelName);
                 setRuntimeInfo({
-                    version: String(data.version || '1.1.1'),
+                    version: String(data.version || '1.1.2'),
                     model_name: modelName,
                     model_path: typeof data.model_path === 'string' ? data.model_path : undefined,
                     llama_cpp: data.llama_cpp,
@@ -4320,7 +4320,7 @@ function ChatView({
                             if (modelName && modelName !== 'Unknown model') {
                                 localStorage.setItem(RUNTIME_MODEL_STORAGE_KEY, modelName);
                                 setRuntimeInfo({
-                                    version: String(data.version || '1.1.1'),
+                                    version: String(data.version || '1.1.2'),
                                     model_name: modelName,
                                     model_path: typeof data.model_path === 'string' ? data.model_path : undefined,
                                     llama_cpp: data.llama_cpp,

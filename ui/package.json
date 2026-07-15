@@ -2,7 +2,7 @@
   "name": "vera",
   "description": "Vera - voice AI assistant",
   "author": "TripleGuard",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "main": "main.js",
   "scripts": {
     "dev": "vite",
