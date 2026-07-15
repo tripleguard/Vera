@@ -9,10 +9,16 @@ from contextvars import ContextVar
 from array import array
 from typing import Any, Callable, Dict, Optional
 import difflib
+import numpy as np
 import sounddevice as sd
 import sherpa_onnx
 from supertonic import TTS
-from main.audio_utils import apply_tts_volume
+from main.audio_devices import (
+    choose_input_samplerate,
+    choose_output_parameters,
+    resolve_audio_device,
+)
+from main.audio_utils import apply_tts_volume, resample_audio, should_speak_response
 from main.llm_server import LlamaServer, LlamaClient
 import msvcrt
 from web.web_search import web_search_answer, execute_wikipedia_command
@@ -40,6 +46,7 @@ from .response_sanitizer import (
     strip_thinking_markup,
 )
 from .voice_control import is_bare_activation_command, is_voice_stop_command
+from .runtime_status import RuntimeStatus
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -64,15 +71,65 @@ def _send_ws(msg: dict):
 _mic_muted = False
 _mic_muted_lock = threading.Lock()  # Lock для thread-safe доступа к _mic_muted
 _shutdown_event = threading.Event()  # Event для graceful shutdown
-_tts_ready_event = threading.Event()
-_agent_ready_event = threading.Event()
 _speech_active_event = threading.Event()
+_runtime_status = RuntimeStatus()
+_audio_level_lock = threading.Lock()
+_audio_current_level = 0.0
+_audio_test_peak = 0.0
+_audio_input_restart_event = threading.Event()
+_audio_input_reconfigure_done_event = threading.Event()
+_tts_sample_rate: Optional[int] = None
 
 
 def get_agent_readiness() -> dict:
+    return _runtime_status.snapshot()
+
+
+def _publish_runtime_status() -> None:
+    _send_ws({"type": "agent_status", **get_agent_readiness()})
+
+
+def _set_component_status(name: str, status: str, error=None) -> None:
+    _runtime_status.update(name, status, error)
+    _publish_runtime_status()
+
+
+def reset_audio_level_test() -> None:
+    global _audio_test_peak
+    with _audio_level_lock:
+        _audio_test_peak = 0.0
+
+
+def get_audio_input_level() -> dict:
+    with _audio_level_lock:
+        level = _audio_current_level
+        peak = _audio_test_peak
+    return {"level": round(level, 4), "peak": round(peak, 4)}
+
+
+def request_audio_input_switch() -> None:
+    _audio_input_reconfigure_done_event.clear()
+    _audio_input_restart_event.set()
+
+
+def wait_audio_input_switch(timeout: float = 5.0) -> bool:
+    return _audio_input_reconfigure_done_event.wait(timeout)
+
+
+def reconfigure_audio_output(selector=None) -> dict:
+    """Validate an output selector and make it active for the next playback."""
+    device = resolve_audio_device("output", selector, sd)
+    source_rate = _tts_sample_rate or device["default_samplerate"]
+    parameters = choose_output_parameters(device, source_rate, sd)
+    try:
+        sd.stop()
+    except Exception:
+        pass
+    if _tts_sample_rate is not None:
+        _set_component_status("tts", "ready", device.get("fallback_reason"))
     return {
-        "ready": _agent_ready_event.is_set(),
-        "tts_ready": _tts_ready_event.is_set(),
+        **device,
+        "playback_samplerate": parameters["samplerate"],
     }
 
 _task_seq_lock = threading.Lock()
@@ -535,19 +592,23 @@ def set_thinking_mode(enabled: bool) -> dict:
     return state
 
 _llm_server = None
+_llm_init_error = None
 try:
     _llm_server = LlamaServer(
         ctx_size=_model_cfg.get("ctx_size", 16384),
         port=_model_cfg.get("server_port", 29741),
     )
 except Exception as e:
+    _llm_init_error = f"Не удалось инициализировать локальный LLM: {e}"
     print(f"[LLM_SERVER] Не удалось инициализировать локальный LLM: {e}")
 
 if _llm_server and not _use_external:
     try:
         _llm_server.start()
         llm = LlamaClient(port=_llm_server.port)
+        _set_component_status("llm", "ready")
     except Exception as e:
+        _llm_init_error = f"Локальный LLM недоступен: {e}"
         print(f"[LLM_CLIENT] Локальный LLM недоступен: {e}")
         try:
             config.set("model", "use_external_server", value=True)
@@ -563,12 +624,21 @@ if _llm_server and not _use_external:
             ),
         })
         llm = LlamaClient(base_url=_external_url)
+        _set_component_status("llm", "degraded", _llm_init_error)
 else:
     if not _use_external and not _llm_server:
         print(f"[LLM_CLIENT] Модель не найдена, используется внешний сервер: {_external_url}")
     else:
         print(f"[LLM_CLIENT] Использование внешнего сервера: {_external_url}")
     llm = LlamaClient(base_url=_external_url)
+    if _use_external:
+        _set_component_status("llm", "ready")
+    else:
+        _set_component_status(
+            "llm",
+            "degraded",
+            _llm_init_error or "Локальная модель не найдена; используется внешний LLM-сервер",
+        )
 
 
 _print_banner_and_tips(cfg["activation_word"])
@@ -577,15 +647,27 @@ _tts_queue: "queue.Queue[dict]" = queue.Queue()
 _tts_thread: Optional[threading.Thread] = None
 
 def _tts_worker():
+    global _tts_sample_rate
     retry_count = 0
     max_retries = 3
     
     while retry_count < max_retries:
         try:
             print("[TTS] Инициализация Supertonic TTS...")
-            tts = TTS(auto_download=True)
+            auto_download = os.environ.get("VERA_TTS_AUTO_DOWNLOAD", "1").strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            tts = TTS(auto_download=auto_download)
+            _tts_sample_rate = int(tts.sample_rate)
+            output_device = reconfigure_audio_output(
+                cfg.get("audio", {}).get("output_device")
+            )
             print("[TTS] Supertonic TTS успешно инициализирован.")
-            _tts_ready_event.set()
+            print(
+                f"[TTS] Устройство вывода: {output_device['name']} "
+                f"({output_device['host_api']}), {output_device['playback_samplerate']} Гц"
+            )
+            _set_component_status("tts", "ready", output_device.get("fallback_reason"))
             
             retry_count = 0
             
@@ -628,13 +710,40 @@ def _tts_worker():
                                 )
                                 duration = float(duration[0]) if hasattr(duration, "__len__") else float(duration)
                                 
-                                wav = apply_tts_volume(wav, volume)
+                                wav = apply_tts_volume(wav, volume).T
+                                output_device = resolve_audio_device(
+                                    "output",
+                                    config.get("audio", "output_device"),
+                                    sd,
+                                )
+                                output_parameters = choose_output_parameters(
+                                    output_device,
+                                    tts.sample_rate,
+                                    sd,
+                                )
+                                playback_rate = output_parameters["samplerate"]
+                                if playback_rate != tts.sample_rate:
+                                    wav = resample_audio(wav, tts.sample_rate, playback_rate)
+                                duration = len(wav) / playback_rate
                                 
                                 # 2. Переключаем анимацию в speaking строго перед воспроизведением
                                 _send_ws({"type": "state", "value": "speaking"})
 
                                 # Воспроизводим аудио
-                                sd.play(wav.T, samplerate=tts.sample_rate)
+                                try:
+                                    sd.play(
+                                        wav,
+                                        samplerate=playback_rate,
+                                        device=output_device["index"],
+                                        extra_settings=output_parameters["extra_settings"],
+                                    )
+                                except Exception as playback_error:
+                                    _set_component_status(
+                                        "tts",
+                                        "error",
+                                        f"Ошибка воспроизведения через {output_device['name']}: {playback_error}",
+                                    )
+                                    raise
                                 
                                 # Ожидание конца воспроизведения с поддержкой прерывания
                                 start_time = time.time()
@@ -684,6 +793,8 @@ def _tts_worker():
             if retry_count >= max_retries:
                 print("[TTS] ФАТАЛЬНО: TTS поток остановлен после множественных сбоев")
                 print("[TTS] Агент продолжит работу, но озвучивание недоступно")
+                _tts_sample_rate = None
+                _set_component_status("tts", "error", e)
                 break
             time.sleep(2)
 
@@ -696,6 +807,9 @@ def _sanitize_assistant_response(text: str) -> str:
 
 
 def speak(text: str):
+    if not _runtime_status.is_ready("tts"):
+        return None
+
     try:
         while True:
             _tts_queue.get_nowait()
@@ -717,6 +831,9 @@ def interrupt_speech():
 
 print("Загрузка модели Sherpa-ONNX...")
 stt_model_dir = "sherpa-onnx-streaming-zipformer-small-ru-vosk-2025-08-16"
+samplerate = 16000
+stt_recognizer = None
+stt_stream = None
 try:
     stt_cfg = cfg.get("sherpa_onnx", {})
     stt_model_dir = stt_cfg.get("model_dir", stt_model_dir)
@@ -745,19 +862,30 @@ try:
     )
     stt_stream = stt_recognizer.create_stream()
     print("[SHERPA] Модель успешно загружена")
+    _set_component_status("stt", "ready")
 except Exception as e:
     print(f"[ERROR] Ошибка загрузки модели Sherpa-ONNX из '{stt_model_dir}': {e}")
     print("[ERROR] Проверьте раздел sherpa_onnx в config.json и наличие файлов tokens/encoder/decoder/joiner.")
-    sys.exit(1)
+    _set_component_status("stt", "error", e)
 
 q = queue.Queue()
 
 def audio_callback(indata, _frames, _time, status):
+    global _audio_current_level, _audio_test_peak
     if status:
         print(status, file=sys.stderr)
     with _mic_muted_lock:
         if _mic_muted:
             return
+    samples = np.frombuffer(indata, dtype=np.int16)
+    level = (
+        max(abs(int(samples.min())), abs(int(samples.max()))) / 32768.0
+        if samples.size
+        else 0.0
+    )
+    with _audio_level_lock:
+        _audio_current_level = level
+        _audio_test_peak = max(_audio_test_peak, level)
     q.put(bytes(indata))
 
 # Настройки веб-поиска
@@ -1083,8 +1211,8 @@ def _command_worker():
                 {"task_id": task_id, "source": source, "response": str(response)[:300]},
             )
 
-            # Озвучиваем только голосовые команды
-            if source == 'voice':
+            response_mode = config.get("tts", "speak_responses", default="voice_only")
+            if should_speak_response(response_mode, source):
                 speak(response)
             else:
                 _send_ws({"type": "state", "value": "listening"})
@@ -1897,103 +2025,145 @@ def _handle_tool_calls(
     )
 
 
-def run_main_loop():
-    """Главный цикл прослушивания и обработки команд."""
-    print("[INFO] Завершение инициализации голосового контура...")
-    # Запускаем поток обработки голосовых команд (LLM не блокирует аудиоцикл)
-    _cmd_thread = threading.Thread(target=_command_worker, daemon=True)
-    _cmd_thread.start()
-    # Теперь можно принимать команды из консоли — запускаем поток чтения stdin
-    _flush_stdin_buffer()
-    _stdin_thread = threading.Thread(target=_stdin_listener, daemon=True)
-    _stdin_thread.start()
+def _run_voice_input_loop(input_samplerate: int) -> None:
+    silence_timeout = cfg["silence_timeout"]
+    last_audio_time = time.time()
+    listening_for_command = False
 
-    # нициализация планировщика периодических задач (Heartbeat)
+    while not _shutdown_event.is_set() and not _audio_input_restart_event.is_set():
+        try:
+            data = q.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        pcm16 = array('h')
+        pcm16.frombytes(data)
+        samples = array('f', (x / 32768.0 for x in pcm16))
+        stt_stream.accept_waveform(input_samplerate, samples)
+
+        partial = ""
+        while stt_recognizer.is_ready(stt_stream):
+            stt_recognizer.decode_stream(stt_stream)
+            partial = stt_recognizer.get_result(stt_stream).lower().strip()
+
+        if partial and listening_for_command:
+            last_audio_time = time.time()
+
+        if not stt_recognizer.is_endpoint(stt_stream):
+            if listening_for_command and (time.time() - last_audio_time > silence_timeout):
+                listening_for_command = False
+            continue
+
+        text = stt_recognizer.get_result(stt_stream).lower().strip()
+        stt_recognizer.reset(stt_stream)
+
+        if text:
+            print(f"[VOICE] {text}")
+        if not text:
+            continue
+
+        voice_stop = is_voice_stop_command(text, cfg["activation_word"])
+        bare_activation = is_bare_activation_command(text, cfg["activation_word"])
+
+        if voice_stop:
+            if is_timer_ringing():
+                interrupt_speech()
+                stop_timer_ring()
+                _send_ws({"type": "timer_done"})
+                _send_ws({"type": "text", "value": "Таймер отключён."})
+                continue
+            if _speech_active_event.is_set() or not bare_activation:
+                interrupt_speech()
+                continue
+
+        if _is_activation(text):
+            interrupt_speech()
+
+        if not listening_for_command:
+            if _is_activation(text):
+                command_text = _remove_activation_words(text)
+                if command_text:
+                    user_command = command_text
+                else:
+                    speak("Я слушаю. Какую команду выполнить?")
+                    listening_for_command = True
+                    last_audio_time = time.time()
+                    continue
+            else:
+                continue
+        else:
+            user_command = text
+            listening_for_command = False
+
+        queue_command(user_command, source='voice')
+
+
+def run_main_loop():
+    """Start text services first, then add voice input when it is available."""
+    print("[INFO] Завершение инициализации голосового контура...")
+    threading.Thread(target=_command_worker, daemon=True).start()
+    _flush_stdin_buffer()
+    threading.Thread(target=_stdin_listener, daemon=True).start()
+
     set_heartbeat_speak_callback(autonomous_speak)
     set_heartbeat_route_callback(route_heartbeat_task)
     set_heartbeat_shutdown_event(_shutdown_event)
     start_heartbeat_scheduler()
 
-    # Запускаем Heartbeat (фоновые периодические задачи)
-    # Настройки теперь контролируются самим планировщиком `heartbeat_commands.py`
-    # и хранятся в `heartbeat_tasks.json`.
+    # Text commands do not depend on a microphone, STT, audio device, or TTS.
+    _runtime_status.set_text_ready()
+    _publish_runtime_status()
+    print("[INFO] Текстовый режим готов.")
 
-    silence_timeout = cfg["silence_timeout"]
+    if stt_recognizer is None or stt_stream is None:
+        _set_component_status(
+            "audio",
+            "disabled",
+            "Аудиовход отключён, потому что распознавание речи недоступно",
+        )
+        print("[VOICE] Голосовой ввод недоступен. Агент продолжает работу в текстовом режиме.")
+        return
 
-    with sd.RawInputStream(samplerate=samplerate, blocksize=8000, dtype='int16', channels=1, callback=audio_callback):
-        while not _tts_ready_event.wait(timeout=0.1):
-            if _shutdown_event.is_set():
-                return
-        _agent_ready_event.set()
-        print("[INFO] Система готова. Скажите ключевое слово.")
-        _send_ws({"type": "agent_status", **get_agent_readiness()})
-        last_audio_time = time.time()
-        listening_for_command = False
-        while not _shutdown_event.is_set():
-            data = q.get()
-            pcm16 = array('h')
-            pcm16.frombytes(data)
-            samples = array('f', (x / 32768.0 for x in pcm16))
-            stt_stream.accept_waveform(samplerate, samples)
-
-            partial = ""
-            while stt_recognizer.is_ready(stt_stream):
-                stt_recognizer.decode_stream(stt_stream)
-                partial = stt_recognizer.get_result(stt_stream).lower().strip()
-
-            if partial and listening_for_command:
-                last_audio_time = time.time()
-
-            if not stt_recognizer.is_endpoint(stt_stream):
-                if listening_for_command and (time.time() - last_audio_time > silence_timeout):
-                    listening_for_command = False
-                continue
-
-            text = stt_recognizer.get_result(stt_stream).lower().strip()
+    while not _shutdown_event.is_set():
+        _audio_input_restart_event.clear()
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
             stt_recognizer.reset(stt_stream)
+            input_device = resolve_audio_device(
+                "input",
+                cfg.get("audio", {}).get("input_device"),
+                sd,
+            )
+            input_samplerate = choose_input_samplerate(input_device, samplerate, sd)
+            with sd.RawInputStream(
+                samplerate=input_samplerate,
+                blocksize=0,
+                dtype='int16',
+                channels=1,
+                callback=audio_callback,
+                device=input_device["index"],
+            ):
+                _set_component_status("audio", "ready", input_device.get("fallback_reason"))
+                _audio_input_reconfigure_done_event.set()
+                print(
+                    f"[AUDIO] Микрофон: {input_device['name']} "
+                    f"({input_device['host_api']}), {input_samplerate} Гц"
+                )
+                print("[INFO] Голосовой ввод готов. Скажите ключевое слово.")
+                _run_voice_input_loop(input_samplerate)
+        except Exception as e:
+            _set_component_status("audio", "error", e)
+            _audio_input_reconfigure_done_event.set()
+            print(f"[AUDIO] Голосовой ввод недоступен: {e}")
+            print("[AUDIO] Агент продолжает работу в текстовом режиме.")
+            while not _shutdown_event.is_set() and not _audio_input_restart_event.wait(0.5):
+                pass
 
-            if text:
-                print(f"[VOICE] {text}")
-            if not text:
-                continue
-
-            voice_stop = is_voice_stop_command(text, cfg["activation_word"])
-            bare_activation = is_bare_activation_command(text, cfg["activation_word"])
-
-            if voice_stop:
-                if is_timer_ringing():
-                    interrupt_speech()
-                    stop_timer_ring()
-                    _send_ws({"type": "timer_done"})
-                    _send_ws({"type": "text", "value": "Таймер отключён."})
-                    continue
-                if _speech_active_event.is_set() or not bare_activation:
-                    interrupt_speech()
-                    continue
-
-            if _is_activation(text):
-                interrupt_speech()
-
-            if not listening_for_command:
-                if _is_activation(text):
-                    command_text = _remove_activation_words(text)
-                    if command_text:
-                        user_command = command_text
-                    else:
-                        speak("Я слушаю. Какую команду выполнить?")
-                        listening_for_command = True
-                        last_audio_time = time.time()
-                        continue
-                else:
-                    continue
-            else:
-                user_command = text
-                listening_for_command = False
-
-            queue_command(user_command, source='voice')
-    
-    # Главный цикл завершен
-    sys.exit(0)
+        if _audio_input_restart_event.is_set():
+            print("[AUDIO] Переключение микрофона без перезапуска агента...")
 
 
 if __name__ == "__main__":

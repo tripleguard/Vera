@@ -284,6 +284,39 @@ interface MemoryPayload {
     categories: string[];
 }
 
+interface AudioDeviceSelector {
+    name: string;
+    host_api: string;
+}
+
+interface AudioDeviceInfo extends AudioDeviceSelector {
+    index: number;
+    direction: 'input' | 'output';
+    channels: number;
+    default_samplerate: number;
+    is_default: boolean;
+}
+
+interface ActiveAudioDevice extends Partial<AudioDeviceSelector> {
+    default_samplerate?: number;
+    fallback_reason?: string | null;
+    error?: string;
+}
+
+interface AudioDevicesPayload {
+    inputs: AudioDeviceInfo[];
+    outputs: AudioDeviceInfo[];
+    selected?: {
+        input?: AudioDeviceSelector | null;
+        output?: AudioDeviceSelector | null;
+    };
+    active?: {
+        input?: ActiveAudioDevice;
+        output?: ActiveAudioDevice;
+    };
+    error?: string;
+}
+
 function CodeBlock({ code, language, isLightMode }: { code: string, language: string, isLightMode: boolean }) {
     const [copied, setCopied] = useState(false);
 
@@ -439,6 +472,182 @@ function SettingsToggle({
     );
 }
 
+type SettingsChoice = {
+    value: string;
+    label: string;
+    description?: string;
+};
+
+function useDropdownMenu() {
+    const [open, setOpen] = useState(false);
+    const rootRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!open) return;
+        const closeOnOutsideClick = (event: PointerEvent) => {
+            if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+        };
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') setOpen(false);
+        };
+        document.addEventListener('pointerdown', closeOnOutsideClick);
+        document.addEventListener('keydown', closeOnEscape);
+        return () => {
+            document.removeEventListener('pointerdown', closeOnOutsideClick);
+            document.removeEventListener('keydown', closeOnEscape);
+        };
+    }, [open]);
+
+    return { open, setOpen, rootRef };
+}
+
+function SettingsChoiceMenu({
+    value,
+    options,
+    ariaLabel,
+    onChange,
+}: {
+    value: string;
+    options: SettingsChoice[];
+    ariaLabel: string;
+    onChange: (value: string) => void;
+}) {
+    const { open, setOpen, rootRef } = useDropdownMenu();
+    const selected = options.find(option => option.value === value) || options[0];
+
+    const choose = (nextValue: string) => {
+        onChange(nextValue);
+        setOpen(false);
+    };
+
+    return (
+        <div className={`audio-device-menu settings-choice-menu ${open ? 'open' : ''}`} ref={rootRef}>
+            <button
+                type="button"
+                className="audio-device-trigger"
+                aria-label={ariaLabel}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                onClick={() => setOpen(current => !current)}
+            >
+                <span className="audio-device-trigger-copy">
+                    <strong>{selected.label}</strong>
+                    {selected.description && <span>{selected.description}</span>}
+                </span>
+                <ChevronDown size={16} />
+            </button>
+            {open && (
+                <div className="audio-device-options" role="listbox" aria-label={ariaLabel}>
+                    {options.map(option => {
+                        const isSelected = option.value === selected.value;
+                        return (
+                            <button
+                                key={option.value}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                className={isSelected ? 'selected' : ''}
+                                onClick={() => choose(option.value)}
+                            >
+                                <span className="audio-device-option-main">
+                                    <strong>{option.label}</strong>
+                                    {option.description && <span>{option.description}</span>}
+                                </span>
+                                {isSelected && <span className="audio-device-selected-dot" />}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function AudioDeviceMenu({
+    devices,
+    value,
+    systemLabel,
+    disabled,
+    onChange,
+}: {
+    devices: AudioDeviceInfo[];
+    value?: AudioDeviceSelector | null;
+    systemLabel: string;
+    disabled?: boolean;
+    onChange: (selector: AudioDeviceSelector | null) => void;
+}) {
+    const { open, setOpen, rootRef } = useDropdownMenu();
+    const selected = value
+        ? devices.find(device => (
+            device.name === value.name && device.host_api === value.host_api
+        )) || value
+        : null;
+
+    const choose = (selector: AudioDeviceSelector | null) => {
+        onChange(selector);
+        setOpen(false);
+    };
+
+    return (
+        <div className={`audio-device-menu ${open ? 'open' : ''}`} ref={rootRef}>
+            <button
+                type="button"
+                className="audio-device-trigger"
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                disabled={disabled}
+                onClick={() => setOpen(current => !current)}
+            >
+                <span className="audio-device-trigger-copy">
+                    <strong>{selected?.name || systemLabel}</strong>
+                    <span>{selected ? selected.host_api : 'Автоматический выбор Windows'}</span>
+                </span>
+                <ChevronDown size={16} />
+            </button>
+            {open && (
+                <div className="audio-device-options" role="listbox">
+                    <button
+                        type="button"
+                        role="option"
+                        aria-selected={!value}
+                        className={!value ? 'selected' : ''}
+                        onClick={() => choose(null)}
+                    >
+                        <span className="audio-device-option-main">
+                            <strong>{systemLabel}</strong>
+                            <span>Следовать настройкам Windows</span>
+                        </span>
+                        {!value && <span className="audio-device-selected-dot" />}
+                    </button>
+                    {devices.map(device => {
+                        const isSelected = value?.name === device.name
+                            && value?.host_api === device.host_api;
+                        return (
+                            <button
+                                key={`${device.host_api}:${device.index}`}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                className={isSelected ? 'selected' : ''}
+                                onClick={() => choose({ name: device.name, host_api: device.host_api })}
+                            >
+                                <span className="audio-device-option-main">
+                                    <strong>{device.name}</strong>
+                                    <span>
+                                        {device.host_api} · {Math.round(device.default_samplerate / 1000)} кГц
+                                        {device.is_default ? ' · системное' : ''}
+                                    </span>
+                                </span>
+                                {isSelected && <span className="audio-device-selected-dot" />}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function SettingsModal({
     isOpen,
     onClose,
@@ -456,6 +665,10 @@ function SettingsModal({
     const [tasks, setTasks] = useState<any[]>([]);
     const [memory, setMemory] = useState<MemoryPayload | null>(null);
     const [settingsRuntimeInfo, setSettingsRuntimeInfo] = useState<RuntimeInfo | null>(null);
+    const [audioDevices, setAudioDevices] = useState<AudioDevicesPayload | null>(null);
+    const [audioTest, setAudioTest] = useState<{ kind: 'input' | 'output'; text: string } | null>(null);
+    const [testingAudio, setTestingAudio] = useState<'input' | 'output' | null>(null);
+    const [applyingAudio, setApplyingAudio] = useState<'input' | 'output' | null>(null);
     const [profileDrafts, setProfileDrafts] = useState<Record<string, string>>({});
     const [memorySearch, setMemorySearch] = useState('');
     const [memoryCategory, setMemoryCategory] = useState('all');
@@ -486,6 +699,8 @@ function SettingsModal({
             setActiveSettingsSection(initialSection || 'appearance');
             setMessage('');
             setSettingsRuntimeInfo(null);
+            setAudioDevices(null);
+            setAudioTest(null);
             Promise.all([
                 veraFetch('http://127.0.0.1:8000/api/config').then(res => res.json()),
                 veraFetch('http://127.0.0.1:8000/api/heartbeat-tasks').then(res => res.json()),
@@ -493,10 +708,22 @@ function SettingsModal({
                 veraFetch('http://127.0.0.1:8000/api/runtime-info')
                     .then(res => res.ok ? res.json() : null)
                     .catch(() => null),
+                veraFetch('http://127.0.0.1:8000/api/audio/devices')
+                    .then(res => res.json())
+                    .catch(err => ({ inputs: [], outputs: [], error: err.message })),
             ])
-                .then(([cfgData, tasksData, memoryData, runtimeData]) => {
+                .then(([cfgData, tasksData, memoryData, runtimeData, audioData]) => {
                     const normalizedConfig = {
                         ...cfgData,
+                        audio: {
+                            input_device: null,
+                            output_device: null,
+                            ...(cfgData?.audio || {}),
+                        },
+                        tts: {
+                            ...(cfgData?.tts || {}),
+                            speak_responses: cfgData?.tts?.speak_responses || 'voice_only',
+                        },
                         model: {
                             ...(cfgData?.model || {}),
                             thinking_budget_tokens: Math.max(
@@ -515,6 +742,11 @@ function SettingsModal({
                     if (runtimeData) {
                         setSettingsRuntimeInfo(runtimeData);
                     }
+                    setAudioDevices({
+                        ...audioData,
+                        inputs: Array.isArray(audioData?.inputs) ? audioData.inputs : [],
+                        outputs: Array.isArray(audioData?.outputs) ? audioData.outputs : [],
+                    });
                     setProfileDrafts(memoryData?.profile || {});
                 })
                 .catch(err => setMessage('Ошибка загрузки настроек: ' + err.message));
@@ -786,6 +1018,63 @@ function SettingsModal({
         const percent = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
         handleChange('tts', 'volume', Math.round(percent), 'number');
         handleChange('tts', 'volume_scale', 'percent_v2', 'string');
+    };
+
+    const applyAudioDevice = async (
+        kind: 'input' | 'output',
+        selector: AudioDeviceSelector | null,
+    ) => {
+        const field = `${kind}_device`;
+        const previous = config.audio?.[field] || null;
+        handleChange('audio', field, selector, 'object');
+        setApplyingAudio(kind);
+        setAudioTest(null);
+        try {
+            const response = await veraFetch('http://127.0.0.1:8000/api/audio/device', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ kind, device: selector }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload?.error || 'Устройство не применено');
+            setAudioDevices(current => current ? {
+                ...current,
+                selected: { ...current.selected, [kind]: selector },
+                active: { ...current.active, [kind]: payload.active },
+            } : current);
+            const label = payload.active?.name || (kind === 'input' ? 'системный микрофон' : 'системный выход');
+            setAudioTest({
+                kind,
+                text: payload.warning || `${kind === 'input' ? 'Микрофон' : 'Выход'} переключён: ${label}`,
+            });
+        } catch (error: any) {
+            handleChange('audio', field, previous, 'object');
+            setAudioTest({ kind, text: `Ошибка: ${error.message}` });
+        } finally {
+            setApplyingAudio(null);
+        }
+    };
+
+    const runAudioTest = async (kind: 'input' | 'output') => {
+        setTestingAudio(kind);
+        setAudioTest(null);
+        try {
+            const response = await veraFetch(`http://127.0.0.1:8000/api/audio/test-${kind}`, {
+                method: 'POST',
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload?.error || 'Проверка не выполнена');
+            const text = kind === 'input'
+                ? (payload.signal_detected
+                    ? `Микрофон работает · пик ${Math.round(Number(payload.peak || 0) * 100)}%`
+                    : 'Сигнал не обнаружен. Скажите что-нибудь громче и повторите проверку.')
+                : 'Тестовая фраза отправлена на выбранное устройство.';
+            setAudioTest({ kind, text });
+        } catch (error: any) {
+            setAudioTest({ kind, text: `Ошибка: ${error.message}` });
+        } finally {
+            setTestingAudio(null);
+        }
     };
 
 
@@ -1114,8 +1403,80 @@ function SettingsModal({
                             <div className="h-px bg-white/5 w-full" />
 
                             <section id="settings-voice" className="settings-anchor">
-                                <h3 className="settings-section-title">Озвучивание</h3>
+                                <h3 className="settings-section-title">Голос и аудио</h3>
                                 <div className="space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm opacity-80 mb-1">Микрофон</label>
+                                            <AudioDeviceMenu
+                                                devices={audioDevices?.inputs || []}
+                                                value={config.audio?.input_device}
+                                                systemLabel="Системный микрофон"
+                                                disabled={applyingAudio !== null}
+                                                onChange={selector => void applyAudioDevice('input', selector)}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm opacity-80 mb-1">Устройство вывода</label>
+                                            <AudioDeviceMenu
+                                                devices={audioDevices?.outputs || []}
+                                                value={config.audio?.output_device}
+                                                systemLabel="Системный выход"
+                                                disabled={applyingAudio !== null}
+                                                onChange={selector => void applyAudioDevice('output', selector)}
+                                            />
+                                        </div>
+                                    </div>
+                                    {audioDevices?.error && (
+                                        <p className="text-xs text-red-300">Не удалось получить список устройств: {audioDevices.error}</p>
+                                    )}
+                                    {(audioDevices?.active?.input?.fallback_reason || audioDevices?.active?.output?.fallback_reason) && (
+                                        <div className="rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-100/80 space-y-1">
+                                            {audioDevices.active.input?.fallback_reason && <p>{audioDevices.active.input.fallback_reason}</p>}
+                                            {audioDevices.active.output?.fallback_reason && <p>{audioDevices.active.output.fallback_reason}</p>}
+                                        </div>
+                                    )}
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => runAudioTest('input')}
+                                            disabled={testingAudio !== null || applyingAudio !== null}
+                                            className="settings-add-button disabled:opacity-40"
+                                        >
+                                            <Mic size={13} />
+                                            {testingAudio === 'input' ? 'Слушаю 2 секунды…' : 'Проверить микрофон'}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => runAudioTest('output')}
+                                            disabled={testingAudio !== null || applyingAudio !== null}
+                                            className="settings-add-button disabled:opacity-40"
+                                        >
+                                            <Volume2 size={13} />
+                                            {testingAudio === 'output' ? 'Запускаю…' : 'Проверить звук'}
+                                        </button>
+                                        {audioTest && (
+                                            <span className={`text-xs ${audioTest.text.startsWith('Ошибка:') ? 'text-red-300' : 'opacity-60'}`}>
+                                                {audioTest.text}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-[11px] opacity-45">
+                                        Устройство переключается сразу и сохраняется автоматически. Для Bluetooth-гарнитуры при одновременной работе микрофона и звука выбирайте профиль Hands-Free: профиль Stereo (A2DP) не поддерживает двусторонний звук.
+                                    </p>
+                                    <div>
+                                        <label className="block text-sm opacity-80 mb-1">Когда озвучивать ответы</label>
+                                        <SettingsChoiceMenu
+                                            value={config.tts?.speak_responses || 'voice_only'}
+                                            ariaLabel="Когда озвучивать ответы"
+                                            options={[
+                                                { value: 'voice_only', label: 'Только на голосовые запросы', description: 'Озвучивать ответы после голосового обращения' },
+                                                { value: 'all', label: 'На голосовые и текстовые запросы', description: 'Озвучивать каждый ответ агента' },
+                                                { value: 'off', label: 'Не озвучивать ответы', description: 'Ответы остаются только в чате' },
+                                            ]}
+                                            onChange={value => handleChange('tts', 'speak_responses', value, 'string')}
+                                        />
+                                    </div>
                                     <div className="tts-volume-card">
                                         <div className="tts-volume-header">
                                             <div>
@@ -1180,25 +1541,24 @@ function SettingsModal({
                                         </div>
                                         <div>
                                             <label className="block text-sm opacity-80 mb-1">Голос</label>
-                                            <div className="settings-select-shell">
-                                                <select
-                                                    value={config.tts?.voice_name || 'Lily'}
-                                                    onChange={e => handleChange('tts', 'voice_name', e.target.value, 'string')}
-                                                    className="settings-select-control"
-                                                >
-                                                    <option value="Lily">Вера · рекомендуется</option>
-                                                    <option value="F1">Алиса · женский</option>
-                                                    <option value="F2">Мира · женский</option>
-                                                    <option value="F3">София · женский</option>
-                                                    <option value="F4">Ника · женский</option>
-                                                    <option value="F5">Ева · женский</option>
-                                                    <option value="M1">Максим · мужской</option>
-                                                    <option value="M2">Илья · мужской</option>
-                                                    <option value="M3">Даниил · мужской</option>
-                                                    <option value="M4">Кирилл · мужской</option>
-                                                    <option value="M5">Роман · мужской</option>
-                                                </select>
-                                            </div>
+                                            <SettingsChoiceMenu
+                                                value={config.tts?.voice_name || 'Lily'}
+                                                ariaLabel="Голос"
+                                                options={[
+                                                    { value: 'Lily', label: 'Вера', description: 'Рекомендуется' },
+                                                    { value: 'F1', label: 'Алиса', description: 'Женский голос' },
+                                                    { value: 'F2', label: 'Мира', description: 'Женский голос' },
+                                                    { value: 'F3', label: 'София', description: 'Женский голос' },
+                                                    { value: 'F4', label: 'Ника', description: 'Женский голос' },
+                                                    { value: 'F5', label: 'Ева', description: 'Женский голос' },
+                                                    { value: 'M1', label: 'Максим', description: 'Мужской голос' },
+                                                    { value: 'M2', label: 'Илья', description: 'Мужской голос' },
+                                                    { value: 'M3', label: 'Даниил', description: 'Мужской голос' },
+                                                    { value: 'M4', label: 'Кирилл', description: 'Мужской голос' },
+                                                    { value: 'M5', label: 'Роман', description: 'Мужской голос' },
+                                                ]}
+                                                onChange={value => handleChange('tts', 'voice_name', value, 'string')}
+                                            />
                                         </div>
                                         <div>
                                             <label className="block text-sm opacity-80 mb-1">Качество синтеза</label>
@@ -1763,6 +2123,51 @@ interface RuntimeInfo {
         path?: string;
         error?: string;
     };
+}
+
+type AgentComponentName = 'llm' | 'tts' | 'stt' | 'audio';
+
+interface AgentComponentState {
+    status: 'starting' | 'ready' | 'degraded' | 'error' | 'disabled';
+    error?: string | null;
+}
+
+interface AgentRuntimeState {
+    ready: boolean;
+    mode: 'starting' | 'full' | 'text_only';
+    components: Record<AgentComponentName, AgentComponentState>;
+}
+
+const AGENT_COMPONENT_LABELS: Record<AgentComponentName, string> = {
+    llm: 'LLM',
+    tts: 'синтез речи (Supertonic)',
+    stt: 'распознавание речи (STT)',
+    audio: 'аудиовход',
+};
+
+function formatAgentRuntimeTitle(runtime: AgentRuntimeState | null): string {
+    if (!runtime) return 'Состояние компонентов ещё не получено';
+    return (Object.keys(runtime.components) as AgentComponentName[])
+        .map(name => {
+            const component = runtime.components[name];
+            const error = component.error ? ` — ${component.error}` : '';
+            return `${AGENT_COMPONENT_LABELS[name]}: ${component.status}${error}`;
+        })
+        .join('\n');
+}
+
+function getVoiceFailureMessage(runtime: AgentRuntimeState): string | null {
+    if (!runtime.ready || runtime.mode !== 'text_only') return null;
+    const failed = (['tts', 'stt', 'audio'] as AgentComponentName[])
+        .filter(name => ['error', 'disabled'].includes(runtime.components[name].status))
+        // Audio is a consequence, not a second missing component, when STT failed.
+        .filter(name => name !== 'audio' || runtime.components.stt.status === 'ready')
+        .map(name => {
+            const component = runtime.components[name];
+            return `${AGENT_COMPONENT_LABELS[name]}${component.error ? `: ${component.error}` : ''}`;
+        });
+    if (failed.length === 0) return null;
+    return `Голосовой режим недоступен: ${failed.join('; ')}. Агент работает только в текстовом режиме.`;
 }
 
 interface LlamaUpdateInfo {
@@ -3197,6 +3602,7 @@ function ChatView({
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isConnected, setIsConnected] = useState(false);
     const [isAgentReady, setIsAgentReady] = useState(false);
+    const [agentRuntime, setAgentRuntime] = useState<AgentRuntimeState | null>(null);
     const [, setIsBackendStarting] = useState(true);
     const [isMaximized, setIsMaximized] = useState(false);
     const [logsOpen, setLogsOpen] = useState(false);
@@ -3249,6 +3655,7 @@ function ChatView({
     const logsEndRef = useRef<HTMLDivElement | null>(null);
     const dragDepthRef = useRef(0);
     const agentReadyRef = useRef(false);
+    const lastVoiceWarningRef = useRef('');
     const llamaUpdateNotifiedRef = useRef(false);
 
     useEffect(() => {
@@ -3876,12 +4283,29 @@ function ChatView({
                         }
                         if (data.type === 'agent_status') {
                             const ready = Boolean(data.ready);
+                            const components = data.components as AgentRuntimeState['components'] | undefined;
+                            const runtime: AgentRuntimeState | null = components ? {
+                                ready,
+                                mode: data.mode === 'full' || data.mode === 'text_only' ? data.mode : 'starting',
+                                components,
+                            } : null;
                             const becameReady = ready && !agentReadyRef.current;
                             agentReadyRef.current = ready;
                             setIsAgentReady(ready);
                             setIsBackendStarting(!ready);
+                            setAgentRuntime(runtime);
                             if (becameReady) {
-                                appendLog('Vera полностью запущена и готова', 'success');
+                                appendLog('Vera готова принимать текстовые запросы', 'success');
+                            }
+                            if (runtime) {
+                                const warning = getVoiceFailureMessage(runtime);
+                                if (warning && warning !== lastVoiceWarningRef.current) {
+                                    lastVoiceWarningRef.current = warning;
+                                    appendLog('Голосовой режим недоступен', 'error', warning);
+                                    pushSystemMessage(warning);
+                                } else if (!warning && runtime.mode === 'full') {
+                                    lastVoiceWarningRef.current = '';
+                                }
                             }
                             return;
                         }
@@ -4474,7 +4898,10 @@ function ChatView({
                         type="button"
                         onClick={toggleMute}
                         className="vera-workspace-mic-button"
-                        title={isMuted ? "Включить микрофон" : "Выключить микрофон"}
+                        disabled={agentRuntime?.components.audio.status !== 'ready'}
+                        title={agentRuntime?.components.audio.status !== 'ready'
+                            ? 'Голосовой ввод недоступен — используйте текстовый чат'
+                            : (isMuted ? "Включить микрофон" : "Выключить микрофон")}
                         aria-label={isMuted ? "Включить микрофон" : "Выключить микрофон"}
                     >
                         {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
@@ -4495,6 +4922,14 @@ function ChatView({
                     <span>Cron</span>
                 </button>
                 <div className="vera-workspace-status-spacer" />
+                <span
+                    className="vera-workspace-runtime-version"
+                    title={formatAgentRuntimeTitle(agentRuntime)}
+                >
+                    {agentRuntime?.mode === 'full'
+                        ? 'Голос + текст'
+                        : (isAgentReady ? 'Текстовый режим' : 'Запуск')}
+                </span>
                 <span className="vera-workspace-runtime-model" title={runtimeInfo.model_path}>
                     {runtimeInfo.model_name}
                 </span>

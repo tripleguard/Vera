@@ -118,6 +118,40 @@ if exist "%PROJECT_ROOT%%STT_MODEL%" (
     echo [WARN] Sherpa-ONNX model not found! STT will not work.
 )
 
+REM Prepare Supertonic as a separate installer component (not part of main staging)
+set "SUPERTONIC_SOURCE=%USERPROFILE%\.cache\supertonic3"
+set "SUPERTONIC_STAGING=%PROJECT_ROOT%build\supertonic3"
+if exist "%SUPERTONIC_STAGING%" rmdir /s /q "%SUPERTONIC_STAGING%"
+if not exist "%SUPERTONIC_SOURCE%\config.json" (
+    echo [ERROR] Supertonic cache not found: %SUPERTONIC_SOURCE%
+    echo [ERROR] Initialize Supertonic once before building the installer.
+    exit /b 1
+)
+if not exist "%SUPERTONIC_SOURCE%\onnx" (
+    echo [ERROR] Supertonic ONNX models are missing: %SUPERTONIC_SOURCE%\onnx
+    exit /b 1
+)
+if not exist "%SUPERTONIC_SOURCE%\voice_styles" (
+    echo [ERROR] Supertonic voice styles are missing: %SUPERTONIC_SOURCE%\voice_styles
+    exit /b 1
+)
+for %%F in (duration_predictor.onnx text_encoder.onnx vector_estimator.onnx vocoder.onnx tts.json unicode_indexer.json) do (
+    if not exist "%SUPERTONIC_SOURCE%\onnx\%%F" (
+        echo [ERROR] Required Supertonic file is missing: %SUPERTONIC_SOURCE%\onnx\%%F
+        exit /b 1
+    )
+)
+if not exist "%SUPERTONIC_SOURCE%\voice_styles\F2.json" (
+    echo [ERROR] Vera voice style is missing: %SUPERTONIC_SOURCE%\voice_styles\F2.json
+    exit /b 1
+)
+echo Preparing separate Supertonic installer component...
+mkdir "%SUPERTONIC_STAGING%" 2>nul
+copy /y "%SUPERTONIC_SOURCE%\config.json" "%SUPERTONIC_STAGING%\config.json" >nul
+copy /y "%SUPERTONIC_SOURCE%\LICENSE" "%SUPERTONIC_STAGING%\LICENSE" >nul 2>nul
+xcopy /e /i /q "%SUPERTONIC_SOURCE%\onnx" "%SUPERTONIC_STAGING%\onnx\" >nul
+xcopy /e /i /q "%SUPERTONIC_SOURCE%\voice_styles" "%SUPERTONIC_STAGING%\voice_styles\" >nul
+
 REM Cleanup problematic DLLs that cause crashes in production
 if exist "%STAGING%\vulkan-1.dll" (
     echo [INFO] Removing bundled vulkan-1.dll to ensure system-wide driver usage...
@@ -138,6 +172,7 @@ echo   Build complete!
 echo ============================================
 echo.
 echo   Staging dir: %STAGING%
+echo   Supertonic component: %SUPERTONIC_STAGING%
 echo.
 echo   Next step: compile vera.iss with Inno Setup
 echo   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" vera.iss

@@ -70,6 +70,14 @@ async def ws_broadcaster():
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from main.config_manager import get_config, get_data_dir
+from main.audio_devices import (
+    choose_input_samplerate,
+    choose_output_parameters,
+    list_audio_devices,
+    normalize_device_selector,
+    preferred_audio_devices,
+    resolve_audio_device,
+)
 from main.commands.heartbeat_commands import get_heartbeat_tasks, replace_heartbeat_tasks
 from main.upload_utils import safe_upload_name
 
@@ -185,6 +193,166 @@ async def get_runtime_info_api():
             "llama_cpp": {"build": None, "raw": ""},
             "error": str(e),
         })
+
+
+@app.get("/api/audio/devices")
+async def get_audio_devices_api():
+    try:
+        config = get_config()
+        audio_config = config.get("audio", default={}) or {}
+        all_devices = list_audio_devices()
+        payload = preferred_audio_devices(all_devices)
+        payload["selected"] = {
+            "input": audio_config.get("input_device"),
+            "output": audio_config.get("output_device"),
+        }
+        payload["active"] = {}
+        for kind in ("input", "output"):
+            try:
+                device = resolve_audio_device(
+                    kind,
+                    audio_config.get(f"{kind}_device"),
+                    available_devices=all_devices,
+                )
+                payload["active"][kind] = {
+                    key: device[key]
+                    for key in ("name", "host_api", "default_samplerate", "fallback_reason")
+                }
+            except Exception as error:
+                payload["active"][kind] = {"error": str(error)}
+        return JSONResponse(content=payload)
+    except Exception as error:
+        return JSONResponse(content={"error": str(error)}, status_code=500)
+
+
+def _audio_device_summary(device: dict) -> dict:
+    return {
+        key: device.get(key)
+        for key in (
+            "name",
+            "host_api",
+            "default_samplerate",
+            "fallback_reason",
+            "playback_samplerate",
+        )
+        if key in device
+    }
+
+
+@app.post("/api/audio/device")
+async def set_audio_device_api(payload: dict):
+    kind = str(payload.get("kind") or "").strip().lower()
+    if kind not in {"input", "output"}:
+        return JSONResponse(content={"error": "Укажите тип устройства: input или output"}, status_code=400)
+
+    raw_selector = payload.get("device")
+    selector = normalize_device_selector(raw_selector)
+    if raw_selector is not None and selector is None:
+        return JSONResponse(content={"error": "Некорректное описание аудиоустройства"}, status_code=400)
+
+    config = get_config()
+    previous_selector = config.get("audio", f"{kind}_device")
+    try:
+        all_devices = list_audio_devices()
+        device = resolve_audio_device(
+            kind,
+            selector,
+            available_devices=all_devices,
+        )
+        if kind == "input":
+            choose_input_samplerate(device)
+        else:
+            choose_output_parameters(device, device["default_samplerate"])
+    except Exception as error:
+        return JSONResponse(content={"error": str(error)}, status_code=409)
+
+    config.set("audio", f"{kind}_device", value=selector)
+    config.save()
+
+    if kind == "output":
+        try:
+            from main.agent import reconfigure_audio_output
+
+            active = reconfigure_audio_output(selector)
+            return JSONResponse(content={
+                "status": "applied",
+                "selected": selector,
+                "active": _audio_device_summary(active),
+            })
+        except Exception as error:
+            config.set("audio", "output_device", value=previous_selector)
+            config.save()
+            try:
+                reconfigure_audio_output(previous_selector)
+            except Exception:
+                pass
+            return JSONResponse(content={"error": str(error)}, status_code=409)
+
+    readiness = get_agent_readiness()
+    if readiness.get("components", {}).get("stt", {}).get("status") != "ready":
+        return JSONResponse(content={
+            "status": "saved",
+            "selected": selector,
+            "active": _audio_device_summary(device),
+            "warning": "Распознавание речи недоступно; микрофон применится при следующем запуске голосового режима",
+        }, status_code=202)
+
+    from main.agent import request_audio_input_switch, wait_audio_input_switch
+
+    request_audio_input_switch()
+    completed = await asyncio.to_thread(wait_audio_input_switch, 5.0)
+    readiness = get_agent_readiness()
+    if completed and readiness.get("audio_ready"):
+        return JSONResponse(content={
+            "status": "applied",
+            "selected": selector,
+            "active": _audio_device_summary(device),
+        })
+
+    error = readiness.get("components", {}).get("audio", {}).get("error")
+    config.set("audio", "input_device", value=previous_selector)
+    config.save()
+    request_audio_input_switch()
+    await asyncio.to_thread(wait_audio_input_switch, 5.0)
+    return JSONResponse(
+        content={"error": error or "Не удалось переключить микрофон; восстановлено предыдущее устройство"},
+        status_code=409,
+    )
+
+
+@app.post("/api/audio/test-input")
+async def test_audio_input_api():
+    readiness = get_agent_readiness()
+    if not readiness.get("audio_ready"):
+        error = readiness.get("components", {}).get("audio", {}).get("error")
+        return JSONResponse(
+            content={"error": error or "Микрофон недоступен"},
+            status_code=409,
+        )
+    from main.agent import get_audio_input_level, reset_audio_level_test
+
+    reset_audio_level_test()
+    await asyncio.sleep(2)
+    levels = get_audio_input_level()
+    return JSONResponse(content={
+        **levels,
+        "signal_detected": levels["peak"] >= 0.01,
+    })
+
+
+@app.post("/api/audio/test-output")
+async def test_audio_output_api():
+    readiness = get_agent_readiness()
+    if not readiness.get("tts_ready"):
+        error = readiness.get("components", {}).get("tts", {}).get("error")
+        return JSONResponse(
+            content={"error": error or "Озвучивание недоступно"},
+            status_code=409,
+        )
+    from main.agent import speak
+
+    speak("Проверка звука. Я Вера, и голос работает.")
+    return JSONResponse(content={"status": "queued"})
 
 
 @app.get("/api/llama-update")

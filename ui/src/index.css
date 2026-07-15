@@ -1355,6 +1355,143 @@ body {
     align-items: center;
 }
 
+.audio-device-menu {
+    position: relative;
+    min-width: 0;
+}
+
+.audio-device-trigger {
+    width: 100%;
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--vera-border) 85%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--vera-bg) 68%, transparent);
+    padding: 0.65rem 0.8rem;
+    color: var(--vera-text);
+    text-align: left;
+    transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.audio-device-trigger:hover:not(:disabled),
+.audio-device-menu.open .audio-device-trigger {
+    border-color: color-mix(in srgb, var(--vera-accent) 45%, var(--vera-border));
+    background: color-mix(in srgb, var(--vera-panel-muted) 72%, var(--vera-bg));
+}
+
+.audio-device-menu.open .audio-device-trigger {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--vera-accent) 12%, transparent);
+}
+
+.audio-device-trigger:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
+.audio-device-trigger > svg {
+    flex: 0 0 auto;
+    color: var(--vera-muted);
+    transition: transform 140ms ease;
+}
+
+.audio-device-menu.open .audio-device-trigger > svg {
+    transform: rotate(180deg);
+}
+
+.audio-device-trigger-copy,
+.audio-device-option-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+}
+
+.audio-device-trigger-copy strong,
+.audio-device-option-main strong {
+    overflow: hidden;
+    color: var(--vera-text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.audio-device-trigger-copy span,
+.audio-device-option-main span {
+    color: var(--vera-muted);
+    font-size: 0.7rem;
+    line-height: 1.2;
+}
+
+.audio-device-options {
+    position: absolute;
+    z-index: 80;
+    top: calc(100% + 0.45rem);
+    left: 0;
+    right: 0;
+    max-height: 270px;
+    overflow-y: auto;
+    border: 1px solid var(--vera-border-strong);
+    border-radius: 13px;
+    background: var(--vera-panel-strong);
+    padding: 0.35rem;
+    box-shadow: 0 18px 45px rgba(0, 0, 0, 0.34);
+    backdrop-filter: blur(18px);
+}
+
+.audio-device-options > button {
+    width: 100%;
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    padding: 0.55rem 0.65rem;
+    color: var(--vera-text);
+    text-align: left;
+    transition: background 120ms ease;
+}
+
+.audio-device-options > button:hover,
+.audio-device-options > button:focus-visible {
+    background: var(--vera-panel-muted);
+    outline: none;
+}
+
+.audio-device-options > button.selected {
+    background: color-mix(in srgb, var(--vera-accent) 13%, transparent);
+}
+
+.audio-device-selected-dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: var(--vera-accent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--vera-accent) 14%, transparent);
+}
+
+.settings-choice-menu .audio-device-trigger {
+    min-height: 50px;
+    padding: 0.55rem 0.75rem;
+}
+
+.settings-choice-menu .audio-device-options {
+    max-height: 280px;
+}
+
+.settings-choice-menu .audio-device-options > button {
+    min-height: 46px;
+    padding: 0.5rem 0.6rem;
+}
+
 .settings-task-schedule-row {
     display: flex;
     flex-wrap: wrap;

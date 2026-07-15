@@ -5,6 +5,7 @@ import numpy as np
 
 MAX_TTS_PEAK = 0.72
 MAX_TTS_AMPLIFICATION = 10.0
+TTS_RESPONSE_MODES = {"voice_only", "all", "off"}
 
 
 def apply_tts_volume(wav: Any, volume_percent: float) -> np.ndarray:
@@ -30,3 +31,29 @@ def apply_tts_volume(wav: Any, volume_percent: float) -> np.ndarray:
         np.clip(audio * gain, -MAX_TTS_PEAK, MAX_TTS_PEAK),
         dtype=np.float32,
     )
+
+
+def resample_audio(audio: Any, source_rate: int, target_rate: int) -> np.ndarray:
+    """Linearly resample mono or frames-first audio without another dependency."""
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.size == 0 or int(source_rate) == int(target_rate):
+        return np.ascontiguousarray(samples)
+    if source_rate <= 0 or target_rate <= 0:
+        raise ValueError("Sample rates must be positive")
+
+    was_mono = samples.ndim == 1
+    frames = samples[:, None] if was_mono else samples
+    if frames.ndim != 2:
+        raise ValueError("Audio must be mono or a frames-first 2D array")
+    output_frames = max(1, int(round(frames.shape[0] * target_rate / source_rate)))
+    source_positions = np.arange(frames.shape[0], dtype=np.float64)
+    target_positions = np.linspace(0, max(0, frames.shape[0] - 1), output_frames)
+    result = np.empty((output_frames, frames.shape[1]), dtype=np.float32)
+    for channel in range(frames.shape[1]):
+        result[:, channel] = np.interp(target_positions, source_positions, frames[:, channel])
+    return np.ascontiguousarray(result[:, 0] if was_mono else result)
+
+
+def should_speak_response(mode: str, source: str) -> bool:
+    normalized = mode if mode in TTS_RESPONSE_MODES else "voice_only"
+    return normalized == "all" or (normalized == "voice_only" and source == "voice")

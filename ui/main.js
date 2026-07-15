@@ -13,6 +13,12 @@ let tray = null;
 
 const apiToken = crypto.randomBytes(32).toString('hex');
 
+// The preload script requests the token synchronously while the first renderer loads.
+// Register this before any BrowserWindow can be created to avoid an empty-token race.
+ipcMain.on('get-api-token-sync', (event) => {
+    event.returnValue = apiToken;
+});
+
 
 let isQuitting = false;
 let backendRestartTimer = null;
@@ -33,6 +39,24 @@ function getPackagedBackendRoot() {
 
 function getBackendRootPath() {
     return app.isPackaged ? getPackagedBackendRoot() : getDevRootPath();
+}
+
+function getManagedSupertonicCachePath() {
+    const localAppData = process.env.LOCALAPPDATA || app.getPath('userData');
+    return path.join(localAppData, 'Vera', 'models', 'supertonic3');
+}
+
+function getVoiceEnvironment() {
+    const env = {
+        // A packaged build must never start a hidden 400 MB download. The installer
+        // owns the optional Supertonic component; missing files mean text-only mode.
+        VERA_TTS_AUTO_DOWNLOAD: app.isPackaged ? '0' : '1',
+    };
+    const managedCache = getManagedSupertonicCachePath();
+    if (fs.existsSync(path.join(managedCache, 'config.json'))) {
+        env.SUPERTONIC_CACHE_DIR = managedCache;
+    }
+    return env;
 }
 
 function broadcastBackendStatus(payload) {
@@ -259,6 +283,7 @@ function startPythonBackend() {
         cwd,
         env: {
             ...process.env,
+            ...getVoiceEnvironment(),
             PYTHONIOENCODING: 'utf-8',
             VERA_INSTALL_ROOT: backendRootPath,
             VERA_API_TOKEN: apiToken,
@@ -442,10 +467,6 @@ if (!gotSingleInstanceLock) {
         startPythonBackend();
         createWindows();
         setupTrayIcon();
-
-        ipcMain.on('get-api-token-sync', (event) => {
-            event.returnValue = apiToken;
-        });
 
         ipcMain.handle('workspace-select-directory', async () => {
             const result = await dialog.showOpenDialog(chatWindow, {

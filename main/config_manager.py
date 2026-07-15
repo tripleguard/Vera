@@ -48,12 +48,17 @@ DEFAULT_CONFIG = {
     },
     "activation_word": "Вера",
     "silence_timeout": 2,
+    "audio": {
+        "input_device": None,
+        "output_device": None,
+    },
     "tts": {
         "voice_name": "Lily",
         "total_steps": 4,
         "volume": 50,
         "volume_scale": "percent_v2",
         "speed": 1.15,
+        "speak_responses": "voice_only",
     },
     "commands": {},
     "sites": {
@@ -368,8 +373,9 @@ class ConfigManager:
         with self._config_path.open(encoding="utf-8-sig") as f:
             self._raw_config = json.load(f)
             tts_migrated = self._normalize_tts_config(self._raw_config)
+            audio_migrated = self._normalize_audio_config(self._raw_config)
             model_migrated = self._normalize_model_config(self._raw_config)
-            migrated = tts_migrated or model_migrated
+            migrated = tts_migrated or audio_migrated or model_migrated
             self._config = copy.deepcopy(self._raw_config)
             logger.info("Configuration loaded from %s", self._config_path)
         if migrated:
@@ -392,9 +398,34 @@ class ConfigManager:
                 volume = (volume / 15) * 100
 
         volume = round(max(0.0, min(100.0, volume)))
-        changed = raw_volume != volume or scale != "percent_v2"
+        raw_response_mode = tts.get("speak_responses")
+        response_mode = (
+            raw_response_mode
+            if raw_response_mode in {"voice_only", "all", "off"}
+            else DEFAULT_CONFIG["tts"]["speak_responses"]
+        )
+        changed = (
+            raw_volume != volume
+            or scale != "percent_v2"
+            or raw_response_mode != response_mode
+        )
         tts["volume"] = volume
         tts["volume_scale"] = "percent_v2"
+        tts["speak_responses"] = response_mode
+        return changed
+
+    @staticmethod
+    def _normalize_audio_config(config: dict) -> bool:
+        from main.audio_devices import normalize_device_selector
+
+        audio = config.setdefault("audio", {})
+        changed = False
+        for field in ("input_device", "output_device"):
+            raw_value = audio.get(field)
+            normalized = normalize_device_selector(raw_value)
+            if raw_value != normalized:
+                changed = True
+            audio[field] = normalized
         return changed
 
     @staticmethod
@@ -443,22 +474,28 @@ class ConfigManager:
     def set_all(self, new_config: dict) -> None:
         self._raw_config = copy.deepcopy(new_config)
         self._normalize_tts_config(self._raw_config)
+        self._normalize_audio_config(self._raw_config)
         self._normalize_model_config(self._raw_config)
         self._config = copy.deepcopy(new_config)
         self._normalize_tts_config(self._config)
+        self._normalize_audio_config(self._config)
         self._normalize_model_config(self._config)
 
     def set(self, *keys: str, value: Any) -> None:
+        if not keys:
+            raise ValueError("At least one configuration key is required")
         if self._config is None:
             self._config = {}
+        if self._raw_config is None:
+            self._raw_config = copy.deepcopy(self._config)
 
-        current = self._config
-        for key in keys[:-1]:
-            if key not in current or not isinstance(current[key], dict):
-                current[key] = {}
-            current = current[key]
-
-        current[keys[-1]] = value
+        for target in (self._config, self._raw_config):
+            current = target
+            for key in keys[:-1]:
+                if key not in current or not isinstance(current[key], dict):
+                    current[key] = {}
+                current = current[key]
+            current[keys[-1]] = copy.deepcopy(value)
 
     def save(self) -> None:
         payload = self._raw_config if self._raw_config is not None else self._config

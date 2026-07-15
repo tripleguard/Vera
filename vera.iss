@@ -9,7 +9,7 @@
 #define MyAppURL "https://github.com/tripleguard/Vera"
 #define MyAppExeName "Vera.exe"
 #define MainInstallSizeText "~656 МБ"
-#define FullInstallSizeText "~1,90 ГиБ"
+#define FullInstallSizeText "~2,28 ГиБ"
 #define LlamaDownloadSize 78643200
 #define ModelDownloadSize 1270808032
 
@@ -58,6 +58,7 @@ Name: "custom"; Description: "Выборочная установка"; Flags: i
 Name: "main"; Description: "Vera — основное приложение ({#MainInstallSizeText})"; Types: full compact custom; Flags: fixed
 Name: "llama"; Description: "llama.cpp — локальный LLM-сервер (~75 МБ, из интернета)"; Types: full; ExtraDiskSpaceRequired: {#LlamaDownloadSize}
 Name: "model"; Description: "Qwen3.5-2B — языковая модель (Q4_K_M, ~1,18 ГиБ, из интернета)"; Types: full; ExtraDiskSpaceRequired: {#ModelDownloadSize}
+Name: "tts"; Description: "Supertonic 3 — локальный синтез речи (~385 МБ)"; Types: full
 
 ; ============================================================
 ;  Файлы приложения
@@ -65,6 +66,9 @@ Name: "model"; Description: "Qwen3.5-2B — языковая модель (Q4_K_
 [Files]
 ; Основное приложение (Electron + Backend)
 Source: "{#StagingDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: main
+
+; Отдельный опциональный голосовой пакет. Без него Vera работает в текстовом режиме.
+Source: "build\supertonic3\*"; DestDir: "{localappdata}\{#MyAppName}\models\supertonic3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: tts
 
 ; Скрипты скачивания (всегда включены, для пользователя)
 Source: "download_llama_server.py"; DestDir: "{app}"; Flags: ignoreversion
@@ -76,6 +80,7 @@ Source: "timer.mp3"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{localappdata}\{#MyAppName}\data"; Permissions: users-modify
 Name: "{localappdata}\{#MyAppName}\data\uploads"
 Name: "{localappdata}\{#MyAppName}\data\interpreter_tmp"
+Name: "{localappdata}\{#MyAppName}\models"; Permissions: users-modify
 
 ; ============================================================
 ;  Ярлыки
