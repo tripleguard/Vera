@@ -13,8 +13,10 @@ const SEND_CHANNELS = new Set([
 
 const INVOKE_CHANNELS = new Set([
     'clipboard-write-image',
+    'get-widget-visibility',
     'projects-list',
     'projects-trash',
+    'set-widget-visibility',
     'terminal-start',
     'workspace-list-directory',
     'workspace-open-file',
@@ -28,6 +30,7 @@ const RECEIVE_CHANNELS = new Set([
     'terminal-exit',
     'terminal-output',
     'theme-changed',
+    'widget-visibility-changed',
     'window-state-changed',
 ]);
 

@@ -7,19 +7,12 @@ from dataclasses import dataclass, asdict
 from main.lang_ru import TIME_UNITS, replace_number_words
 from main.config_manager import get_data_dir, get_install_root
 from user.json_storage import load_json, save_json
+from user.notifications import show_reminder_notification
 from .scheduler_base import SchedulerBase, TIME_FORMAT, ts_from_float, ts_to_float, parse_time_str
 
 
 # Путь к файлу напоминаний
 _REMINDERS_FILE = get_data_dir() / "reminders.json"
-
-# Импорт модуля уведомлений
-try:
-    from user.notifications import show_reminder_notification
-    _NOTIFICATIONS_ENABLED = True
-except ImportError:
-    _NOTIFICATIONS_ENABLED = False
-
 
 @dataclass
 class _Reminder:
@@ -175,14 +168,12 @@ class _ReminderScheduler(SchedulerBase):
             if task.is_timer:
                 _start_timer_ring()
                 _emit_nearest_timer()
-                self.speak(task.message + ". Скажите стоп чтобы отключить.")
+                self.speak(task.message.rstrip(" .") + ". Скажите стоп чтобы отключить.")
+                notification_title = "⏰ Таймер завершён"
             else:
                 self.speak(task.message)
-                if _NOTIFICATIONS_ENABLED:
-                    try:
-                        show_reminder_notification("⏰ Напоминание", task.message)
-                    except Exception:
-                        pass
+                notification_title = "⏰ Напоминание"
+            show_reminder_notification(notification_title, task.message)
 
 
 _reminder_scheduler = _ReminderScheduler()

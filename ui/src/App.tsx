@@ -675,6 +675,7 @@ function SettingsModal({
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
     const [activeSettingsSection, setActiveSettingsSection] = useState('appearance');
+    const [widgetVisible, setWidgetVisibleState] = useState(true);
 
     const settingsSections = [
         { id: 'appearance', label: 'Оформление', icon: Palette },
@@ -711,8 +712,11 @@ function SettingsModal({
                 veraFetch('http://127.0.0.1:8000/api/audio/devices')
                     .then(res => res.json())
                     .catch(err => ({ inputs: [], outputs: [], error: err.message })),
+                ipcRenderer
+                    ? ipcRenderer.invoke('get-widget-visibility').catch(() => true)
+                    : Promise.resolve(true),
             ])
-                .then(([cfgData, tasksData, memoryData, runtimeData, audioData]) => {
+                .then(([cfgData, tasksData, memoryData, runtimeData, audioData, currentWidgetVisible]) => {
                     const normalizedConfig = {
                         ...cfgData,
                         audio: {
@@ -747,6 +751,7 @@ function SettingsModal({
                         inputs: Array.isArray(audioData?.inputs) ? audioData.inputs : [],
                         outputs: Array.isArray(audioData?.outputs) ? audioData.outputs : [],
                     });
+                    setWidgetVisibleState(currentWidgetVisible !== false);
                     setProfileDrafts(memoryData?.profile || {});
                 })
                 .catch(err => setMessage('Ошибка загрузки настроек: ' + err.message));
@@ -757,6 +762,17 @@ function SettingsModal({
             }, 0);
         }
     }, [initialSection, isOpen]);
+
+    useEffect(() => {
+        if (!ipcRenderer) return;
+        const handleWidgetVisibilityChanged = (_event: unknown, visible: boolean) => {
+            setWidgetVisibleState(visible !== false);
+        };
+        ipcRenderer.on('widget-visibility-changed', handleWidgetVisibilityChanged);
+        return () => {
+            ipcRenderer.removeListener('widget-visibility-changed', handleWidgetVisibilityChanged);
+        };
+    }, []);
 
     if (!isOpen) return null;
 
@@ -836,6 +852,22 @@ function SettingsModal({
             }
             return newConfig;
         });
+    };
+
+    const applyWidgetVisibility = async (visible: boolean) => {
+        const previous = widgetVisible;
+        setWidgetVisibleState(visible);
+        if (!ipcRenderer) return;
+        try {
+            const result = await ipcRenderer.invoke(
+                'set-widget-visibility',
+                visible,
+            ) as { visible?: boolean };
+            setWidgetVisibleState(result?.visible !== false);
+        } catch (error: any) {
+            setWidgetVisibleState(previous);
+            setMessage(`Не удалось изменить видимость виджета: ${error.message}`);
+        }
     };
 
     const handleSiteChange = (oldKey: string, newKey: string, newValue: string, isKeyChange: boolean) => {
@@ -1284,6 +1316,12 @@ function SettingsModal({
                             <section id="settings-general" className="settings-anchor">
                                 <h3 className="settings-section-title">Общие</h3>
                                 <div className="space-y-4">
+                                    <SettingsToggle
+                                        checked={widgetVisible}
+                                        onChange={applyWidgetVisibility}
+                                        label="Показывать плавающий виджет"
+                                        description="Виджет отображается поверх остальных окон. Настройка применяется сразу."
+                                    />
                                     <div>
                                         <label className="block text-sm opacity-80 mb-1">Активационное слово</label>
                                         <input
@@ -2052,12 +2090,31 @@ function WidgetView({ isLightMode }: { isLightMode: boolean }) {
         if (ipcRenderer) ipcRenderer.send('toggle-chat');
     };
 
+    const hideWidget = async (event: React.MouseEvent<HTMLButtonElement>) => {
+        event.stopPropagation();
+        if (!ipcRenderer) return;
+        try {
+            await ipcRenderer.invoke('set-widget-visibility', false);
+        } catch (error) {
+            console.error('Не удалось скрыть виджет:', error);
+        }
+    };
+
     const isSpeaking = status === 'speaking';
     const isThinking = status === 'thinking';
     const showTimer = !!timerDeadline && !!timerDisplay;
 
     return (
-        <div className="vera-widget w-full h-full flex items-center justify-center rounded-2xl shadow-2xl drag-region select-none overflow-hidden transition-colors">
+        <div className="vera-widget relative w-full h-full flex items-center justify-center rounded-2xl shadow-2xl drag-region select-none overflow-hidden transition-colors">
+            <button
+                type="button"
+                className="widget-hide-button no-drag-region"
+                onClick={hideWidget}
+                aria-label="Скрыть плавающий виджет"
+                title="Скрыть виджет"
+            >
+                <X size={11} strokeWidth={2.4} />
+            </button>
             {showTimer ? (
                 <div
                     className="flex flex-col items-center justify-center cursor-pointer no-drag-region"

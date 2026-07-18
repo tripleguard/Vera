@@ -239,6 +239,41 @@ body {
     background: var(--vera-widget-surface);
 }
 
+.widget-hide-button {
+    position: absolute;
+    z-index: 10;
+    top: 5px;
+    right: 5px;
+    width: 19px;
+    height: 19px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid color-mix(in srgb, var(--vera-border) 78%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--vera-panel-strong) 88%, transparent);
+    color: var(--vera-muted);
+    opacity: 0;
+    pointer-events: none;
+    transform: scale(0.86);
+    transition: opacity 130ms ease, transform 130ms ease, color 130ms ease, background 130ms ease;
+}
+
+.vera-widget:hover .widget-hide-button,
+.widget-hide-button:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: scale(1);
+}
+
+.widget-hide-button:hover,
+.widget-hide-button:focus-visible {
+    border-color: color-mix(in srgb, #ff6b73 55%, var(--vera-border));
+    background: color-mix(in srgb, #ff6b73 18%, var(--vera-panel-strong));
+    color: #ff7b82;
+    outline: none;
+}
+
 .vera-shell .drag-region {
     background: color-mix(in srgb, var(--vera-panel-strong) 82%, transparent);
     border-color: var(--vera-border);

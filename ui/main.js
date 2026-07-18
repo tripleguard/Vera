@@ -10,8 +10,10 @@ let pythonProcess = null;
 let terminalProcess = null;
 let terminalWorkingDirectory = null;
 let tray = null;
+let widgetVisible = true;
 
 const apiToken = crypto.randomBytes(32).toString('hex');
+const UI_PREFERENCES_FILENAME = 'widget-preferences.json';
 
 // The preload script requests the token synchronously while the first renderer loads.
 // Register this before any BrowserWindow can be created to avoid an empty-token race.
@@ -39,6 +41,100 @@ function getPackagedBackendRoot() {
 
 function getBackendRootPath() {
     return app.isPackaged ? getPackagedBackendRoot() : getDevRootPath();
+}
+
+function getUiPreferencesPath() {
+    return path.join(app.getPath('userData'), UI_PREFERENCES_FILENAME);
+}
+
+function loadUiPreferences() {
+    const preferencesPath = getUiPreferencesPath();
+    try {
+        if (!fs.existsSync(preferencesPath)) {
+            widgetVisible = true;
+            return;
+        }
+        const preferences = JSON.parse(fs.readFileSync(preferencesPath, 'utf8'));
+        widgetVisible = preferences.widgetVisible !== false;
+    } catch (error) {
+        widgetVisible = true;
+        console.error('[WIDGET] Не удалось прочитать настройки виджета:', error);
+    }
+}
+
+function saveUiPreferences() {
+    try {
+        const preferencesPath = getUiPreferencesPath();
+        fs.mkdirSync(path.dirname(preferencesPath), { recursive: true });
+        fs.writeFileSync(preferencesPath, JSON.stringify({ widgetVisible }, null, 2), 'utf8');
+    } catch (error) {
+        console.error('[WIDGET] Не удалось сохранить настройки виджета:', error);
+    }
+}
+
+function broadcastWidgetVisibility() {
+    for (const win of [chatWindow, widgetWindow]) {
+        if (win && !win.isDestroyed()) {
+            win.webContents.send('widget-visibility-changed', widgetVisible);
+        }
+    }
+}
+
+function updateTrayContextMenu() {
+    if (!tray) {
+        return;
+    }
+    tray.setContextMenu(Menu.buildFromTemplate([
+        { label: 'Открыть чат', click: focusChatWindow },
+        {
+            label: 'Показывать плавающий виджет',
+            type: 'checkbox',
+            checked: widgetVisible,
+            click: menuItem => {
+                setWidgetVisibility(menuItem.checked);
+            },
+        },
+        { type: 'separator' },
+        {
+            label: 'Выход',
+            click: () => {
+                isQuitting = true;
+                stopPythonBackend();
+                app.exit(0);
+            },
+        },
+    ]));
+}
+
+function setWidgetVisibility(visible) {
+    const nextVisible = Boolean(visible);
+    const changed = widgetVisible !== nextVisible;
+    widgetVisible = nextVisible;
+
+    if (widgetWindow && !widgetWindow.isDestroyed()) {
+        if (widgetVisible) {
+            widgetWindow.showInactive();
+        } else {
+            widgetWindow.hide();
+        }
+    }
+
+    if (changed) {
+        saveUiPreferences();
+    }
+    updateTrayContextMenu();
+    broadcastWidgetVisibility();
+    return { visible: widgetVisible };
+}
+
+function registerWidgetIpcHandlers() {
+    ipcMain.handle('get-widget-visibility', () => widgetVisible);
+    ipcMain.handle('set-widget-visibility', (_event, visible) => {
+        if (typeof visible !== 'boolean') {
+            throw new TypeError('Widget visibility must be a boolean.');
+        }
+        return setWidgetVisibility(visible);
+    });
 }
 
 function getManagedSupertonicCachePath() {
@@ -355,6 +451,7 @@ function createWindows() {
         alwaysOnTop: true,
         skipTaskbar: true,
         resizable: false,
+        show: widgetVisible,
         icon: iconPath,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
@@ -436,18 +533,7 @@ function setupTrayIcon() {
 
     tray = new Tray(trayIconImage);
     tray.setToolTip('Vera Agent');
-    tray.setContextMenu(Menu.buildFromTemplate([
-        { label: 'Открыть чат', click: focusChatWindow },
-        { type: 'separator' },
-        {
-            label: 'Выход',
-            click: () => {
-                isQuitting = true;
-                stopPythonBackend();
-                app.exit(0);
-            },
-        },
-    ]));
+    updateTrayContextMenu();
 
     tray.on('double-click', focusChatWindow);
 }
@@ -457,13 +543,12 @@ if (!gotSingleInstanceLock) {
     app.quit();
 } else {
     app.on('second-instance', () => {
-        if (widgetWindow && !widgetWindow.isVisible()) {
-            widgetWindow.show();
-        }
         focusChatWindow();
     });
 
     app.whenReady().then(() => {
+        loadUiPreferences();
+        registerWidgetIpcHandlers();
         startPythonBackend();
         createWindows();
         setupTrayIcon();
