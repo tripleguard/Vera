@@ -5,7 +5,7 @@
 
 ![Python](https://img.shields.io/badge/Python-min%203.10%2B-3776AB?logo=python&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-min%2020.19%2B-339933?logo=node.js&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-145%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-146%20passing-brightgreen)
 
 Полностью локальный голосовой агент с оффлайн-распознаванием речи, встроенной локальной моделью LLM и удобным графическим интерфейсом.
 
