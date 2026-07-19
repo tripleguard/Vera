@@ -117,6 +117,7 @@ class MultimodalTests(unittest.TestCase):
 
             with (
                 patch("main.llm_server.get_install_root", return_value=root),
+                patch("main.llm_server.get_data_dir", return_value=root / "data"),
                 patch("main.llm_server.get_config", return_value=_Config()),
                 patch("main.llm_server.subprocess.Popen") as popen,
                 patch.object(LlamaServer, "_wait_for_health", return_value=True),
@@ -126,7 +127,7 @@ class MultimodalTests(unittest.TestCase):
                 process.poll.return_value = None
                 server = LlamaServer()
                 server.start()
-                server._process = None
+                server.stop()
 
             command = popen.call_args.args[0]
             reuse_index = command.index("--cache-reuse")

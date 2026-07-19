@@ -11,7 +11,7 @@ import sys
 import time
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, TextIO
 import ctypes
 import json
 
@@ -112,8 +112,10 @@ class LlamaServer:
         self.extra_args = extra_args or []
 
         self._process: Optional[subprocess.Popen] = None
+        self._log_file: Optional[TextIO] = None
         self._exe_path = self._find_executable()
         self._job_handle = 0
+        atexit.register(self.stop)
 
     # ── публичные методы ──
 
@@ -172,24 +174,27 @@ class LlamaServer:
         
         # Открываем файл для записи вывода сервера
         # Используем 'a' (append), чтобы не затирать логи при каждом перезапуске
-        log_file = open(log_file_path, "a", encoding="utf-8")
-        log_file.write(f"\n\n--- Запуск сервера: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-        log_file.flush()
+        self._close_log_file()
+        self._log_file = open(log_file_path, "a", encoding="utf-8")
+        self._log_file.write(f"\n\n--- Запуск сервера: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+        self._log_file.flush()
 
-        self._process = subprocess.Popen(
-            cmd,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            cwd=str(self._exe_path.parent),
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+                cwd=str(self._exe_path.parent),
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+        except Exception:
+            self._close_log_file()
+            raise
         
         # Привязываем процесс к Job Object, чтобы он умер вместе с нами
         if sys.platform == "win32":
             self._job_handle = _assign_to_job_object(self._process.pid)
             
-        atexit.register(self.stop)
-
         if not self._wait_for_health():
             failed_projector = self.mmproj_path
             self.stop()
@@ -208,9 +213,11 @@ class LlamaServer:
     def stop(self) -> None:
         """Корректно завершает процесс сервера."""
         if self._process is None:
+            self._close_log_file()
             return
         if self._process.poll() is not None:
             self._process = None
+            self._close_log_file()
             return
         
         # Закрываем хэндл Job Object, если он был создан
@@ -231,7 +238,13 @@ class LlamaServer:
             print(f"[LLM_SERVER] Ошибка при остановке: {e}")
         finally:
             self._process = None
+            self._close_log_file()
         print("[LLM_SERVER] Сервер остановлен.")
+
+    def _close_log_file(self) -> None:
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
 
     def restart(self) -> None:
         """Перезапускает сервер."""

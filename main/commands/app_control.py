@@ -11,12 +11,10 @@ from main.app_indexer import load_app_index, build_app_index
 from main.lang_ru import ru_to_en
 from main.utils.fuzzy import fuzzy_match
 
-# Загрузка индекса приложений (автоматически обновляется если устарел)
-try:
-    APP_INDEX = load_app_index()
-except Exception as e:
-    print(f"[APP_INDEX] Ошибка: {e}")
-    APP_INDEX = []
+# Индекс приложений может требовать длительного сканирования файловой системы и
+# записи в пользовательский каталог. Загружаем его только по первой команде,
+# которой действительно нужен поиск приложения.
+APP_INDEX: Optional[list[dict[str, str]]] = None
 
 
 # Глобальные переменные
@@ -32,6 +30,17 @@ def _current_username() -> str:
 def _expand_config_placeholders(s: str) -> str:
     """Раскрывает плейсхолдеры в конфигурации."""
     return s.replace("${USER}", _current_username())
+
+
+def _get_app_index() -> list[dict[str, str]]:
+    global APP_INDEX
+    if APP_INDEX is None:
+        try:
+            APP_INDEX = load_app_index()
+        except Exception as e:
+            print(f"[APP_INDEX] Ошибка: {e}")
+            APP_INDEX = []
+    return APP_INDEX
 
 
 def kill_process(name: str) -> bool:
@@ -103,7 +112,7 @@ def _best_app_match(query: str) -> Optional[dict]:
     q_en = ru_to_en(q)
     best_item, best_score = None, 0.0
     
-    for item in APP_INDEX:
+    for item in _get_app_index():
         for cand in [item.get("display_name", "").lower(), 
                      item.get("exe_name", "").lower(),
                      Path(item.get("lnk_path", "")).stem.lower()]:
